@@ -934,7 +934,9 @@ fn render_menu<T: Clone + PartialEq + 'static>(args: MenuArgs<T>, window: &mut W
         }
     };
     // The window losing focus closes it (a change of focus, not an inactive window it opened in).
-    let active_now = window.is_window_active();
+    // `decibell_harness::focus::window_active`: the platform's answer, or a self-test's hold (other
+    // windows share the desktop), as the popovers ask.
+    let active_now = decibell_harness::focus::window_active(window, cx);
     let was_active = state.read(cx).window_active;
     if was_active == Some(true) && !active_now {
         let dismiss = dismiss.clone();

@@ -613,9 +613,11 @@ async fn check_images_live(cx: TestCx) -> Result<()> {
     cx.log(format_args!("{} row tops unchanged", first.0.len()));
     let settled = cx.settle().await;
     if settled.is_err() {
-        // Still drawing: which stores notify meanwhile.
+        // Still drawing: which stores notify meanwhile, and what is only presented.
+        let (before, active) = (cx.frames()?, cx.update(|window, _| window.is_window_active())?);
         let (counts, _) = store_notifications(&cx, Duration::from_secs(3)).await?;
-        cx.log(format_args!("still drawing; store notifications in 3 s: {counts}"));
+        let presented = cx.frames()?.since(before).presented;
+        cx.log(format_args!("still drawing; store notifications in 3 s: {counts}; {presented} presented (window active: {active})"));
     }
     let settled = settled?;
     let quiet = cx.frames()?;

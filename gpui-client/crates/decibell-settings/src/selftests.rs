@@ -1441,12 +1441,17 @@ async fn check_shake(cx: TestCx) -> Result<()> {
     ensure!(applied == 0, "Esc applied the draft");
     cx.log("Esc with a typed value shook the save bar; the window stayed, nothing applied");
     cx.settle().await?;
-    // The save bar's Reset drops it: Esc closes.
+    // The save bar's Reset drops it: Esc closes. (The box still has the focus: its caret blinks
+    // twice a second while the window is the desktop's active one, which no "1 s without a frame"
+    // survives; Tab moves the focus on to the next control inside the window, as a hand would,
+    // with nothing left to apply.)
     cx.update(move |_, cx| {
         if let Some(n) = network(cx) {
             n.update(cx, |n, cx| n.reset(cx));
         }
     })?;
+    cx.keystroke("tab")?;
+    draw_pending(&cx)?;
     step(&cx, "Esc after Reset", async |cx| cx.keystroke("escape").map(|_| ()), |cx| !settings_open(cx)).await?;
     // A press anywhere else takes the focus from the box, which applies what it holds
     // (`onBlur`): another tab opens, with the cap applied.

@@ -213,6 +213,15 @@ per burst of events. The `idle-frames` self-test fails the build's bar when a sc
   See `crates/decibell-app/src/selftests.rs`.
 - Self-tests open a real window on the session's display (GPUI cannot hide a window on Linux) and leave the
   theme and state as they found them. A capture never opens one.
+- **The desktop is shared**: other windows take the focus, the real pointer rests where it rests, other clients
+  of the local stack send events. Make a test independent of that where the harness allows:
+  `decibell_harness::focus::hold_window_focus` for "is the window active" (the kit's popovers and selects, the
+  DM read rule honour it), synthesised pointer positions instead of the real pointer, and for a measurement at
+  rest the "disturbed → try again" pattern (count focus changes, pointer moves and core events during the
+  window). A test that still could not measure returns `decibell_harness::inconclusive(reason)` (reported
+  INCONCLUSIVE, never PASS); a parent relaying a `--check` child's INCONCLUSIVE is INCONCLUSIVE too.
+  `TestCx::settle` waits for draws to stop and lets a present-only animation run on (the active tile's glow
+  while the window has the focus).
 
 ## Shell (`decibell-shell`, `decibell-common`)
 

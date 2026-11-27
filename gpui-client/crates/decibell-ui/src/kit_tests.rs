@@ -207,19 +207,50 @@ fn wheel(cx: &TestCx, position: Point<Pixels>, delta: ScrollDelta) -> Result<()>
     )
 }
 
-/// Waits for drawing to stop, then checks that nothing is drawn or presented for `window`.
+/// Sleeps `duration` watching what draws frames that aren't the window's own: the desktop's
+/// focus changing hands (GPUI redraws the whole window), the pointer moving over it.
+async fn watched_sleep(cx: &TestCx, duration: Duration) -> Result<Option<String>> {
+    let state = |cx: &TestCx| cx.update(|window, _| (window.is_window_active(), window.mouse_position()));
+    let mut last = state(cx)?;
+    let (mut flips, mut moved) = (0, false);
+    let started = Instant::now();
+    while started.elapsed() < duration {
+        cx.sleep(Duration::from_millis(50)).await;
+        let now = state(cx)?;
+        flips += usize::from(now.0 != last.0);
+        moved |= now.1 != last.1;
+        last = now;
+    }
+    Ok(match (flips, moved) {
+        (0, false) => None,
+        (flips, moved) => Some(format!("{flips} focus changes{}", if moved { ", the pointer moved" } else { "" })),
+    })
+}
+
+/// Waits for drawing to stop, then checks that nothing is drawn or presented for `window`. A try
+/// in which the desktop disturbed the window (its focus changed hands, the pointer moved) and it
+/// drew is taken again; three disturbed tries are inconclusive.
 async fn assert_idle(cx: &TestCx, window: Duration, what: &str) -> Result<Frames> {
     let mut last = None;
+    let mut disturbed = 0;
     for _ in 0..3 {
         let before = cx.settle().await?;
-        cx.sleep(window).await;
+        let disturbance = watched_sleep(cx, window).await?;
         let frames = cx.frames()?.since(before);
         if frames.drawn == 0 && frames.presented == 0 {
             return Ok(frames);
         }
-        last = Some(frames);
+        if let Some(d) = disturbance {
+            disturbed += 1;
+            last = Some(format!("{frames:?}, disturbed: {d}"));
+        } else {
+            last = Some(format!("{frames:?}"));
+        }
     }
-    bail!("{what}: still drawing at rest ({last:?})")
+    if disturbed == 3 {
+        return Err(decibell_harness::inconclusive(format!("{what}: every try disturbed by the desktop ({})", last.unwrap_or_default())));
+    }
+    bail!("{what}: still drawing at rest ({})", last.unwrap_or_default())
 }
 
 /// Polls the frame counters every 2 ms until nothing has been drawn or presented for 250 ms;
@@ -251,6 +282,7 @@ async fn frames_until_quiet(cx: &TestCx, since: Instant) -> Result<(u64, Duratio
 // ── kit-idle ────────────────────────────────────────────────────────────────────────────────
 
 async fn kit_idle(cx: TestCx) -> Result<()> {
+    let mut unmeasured = Vec::new();
     for screen in crate::kit::screens() {
         let build = screen.build;
         let (window, _) = open(&cx, build)?;
@@ -264,8 +296,18 @@ async fn kit_idle(cx: TestCx) -> Result<()> {
         };
         close(&window);
         cx.update(|_, cx| Toasts::dismiss_all(cx))?;
-        let note = result?;
-        cx.log(format_args!("{}: 0 frames drawn over 2 s at rest{note}", screen.name));
+        match result {
+            Ok(note) => cx.log(format_args!("{}: 0 frames drawn over 2 s at rest{note}", screen.name)),
+            // Measure the other screens; say which one the desktop kept from being measured.
+            Err(e) if e.downcast_ref::<decibell_harness::Inconclusive>().is_some() => {
+                cx.log(format_args!("{}: not measured ({e})", screen.name));
+                unmeasured.push(screen.name);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if !unmeasured.is_empty() {
+        return Err(decibell_harness::inconclusive(format!("disturbed by the desktop on every try: {}", unmeasured.join(", "))));
     }
     Ok(())
 }
@@ -274,12 +316,24 @@ async fn kit_idle(cx: TestCx) -> Result<()> {
 /// spinners' presents stay at or under 60 a second.
 async fn spinning_idle(cx: &TestCx) -> Result<String> {
     cx.sleep(Duration::from_millis(800)).await;
-    let before = cx.frames()?;
-    cx.sleep(Duration::from_secs(2)).await;
-    let frames = cx.frames()?.since(before);
-    ensure!(frames.drawn == 0, "{} frames drawn at rest", frames.drawn);
-    ensure!(frames.presented <= 2 * 62, "the spinners presented {} times in 2 s", frames.presented);
-    Ok(format!(", {} presents in 2 s (the spinners' scene animation)", frames.presented))
+    // A try that drew while the desktop disturbed the window (its focus changed hands, the pointer
+    // moved over it) is taken again; three disturbed tries are inconclusive.
+    let mut last = String::new();
+    for _ in 0..3 {
+        let before = cx.frames()?;
+        let disturbance = watched_sleep(cx, Duration::from_secs(2)).await?;
+        let frames = cx.frames()?.since(before);
+        if frames.drawn == 0 {
+            ensure!(frames.presented <= 2 * 62, "the spinners presented {} times in 2 s", frames.presented);
+            return Ok(format!(", {} presents in 2 s (the spinners' scene animation)", frames.presented));
+        }
+        match disturbance {
+            None => bail!("{} frames drawn at rest", frames.drawn),
+            Some(d) => last = format!("{} frames drawn, disturbed: {d}", frames.drawn),
+        }
+        cx.settle().await?;
+    }
+    Err(decibell_harness::inconclusive(format!("kit-buttons: every try disturbed by the desktop ({last})")))
 }
 
 // ── kit-switch ──────────────────────────────────────────────────────────────────────────────
@@ -358,6 +412,16 @@ impl Render for SelectFixture {
 }
 
 async fn kit_select(cx: TestCx) -> Result<()> {
+    // An open menu closes when its window loses the desktop's focus: hold it "active" (other
+    // windows share the desktop; the closing itself is the select's own rule, not this test's).
+    cx.update(|_, cx| decibell_harness::focus::hold_window_focus(Some(true), cx))?;
+    let result = kit_select_held(&cx).await;
+    cx.update(|_, cx| decibell_harness::focus::hold_window_focus(None, cx))?;
+    result
+}
+
+async fn kit_select_held(cx: &TestCx) -> Result<()> {
+    let cx = cx.clone();
     let (window, view) = open(&cx, |_, cx| {
         let handle = SelectHandle::new(cx);
         cx.new(|_| SelectFixture {

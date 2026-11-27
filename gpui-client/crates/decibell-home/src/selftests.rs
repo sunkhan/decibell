@@ -948,19 +948,44 @@ async fn dm_composer(cx: &TestCx, peer: Uid, their: &str, a_name: &str) -> Resul
     cx.log("reply: the arrow put the bar up, Enter sent it answering their message");
     // ArrowUp in the empty box: our newest message in the inline editor; Enter saves.
     let own = cx.update(move |_, cx| conversation_rows(peer, cx).iter().rev().find(|m| m.id > 0 && m.sender_uid == own_uid(cx)).map(|m| m.id))?.context("our row")?;
+    let frames_before_up = cx.frames()?;
     cx.keystroke("up")?;
     wait_for(cx, Duration::from_secs(5), "the inline editor", move |cx| list(cx).is_some_and(|l| l.read(cx).editing() == Some(own))).await?;
     quiet(cx).await?;
+    let drawn_since_up = cx.frames()?.since(frames_before_up).drawn;
+    let window_state = cx.update(move |window, cx| {
+        format!(
+            "{drawn_since_up} frames drawn since ArrowUp; window active {}, visible {}; a handle focused {}",
+            window.is_window_active(),
+            window.is_visible(),
+            window.focused(cx).is_some()
+        )
+    })?;
     let edited = format!("a reply to that, edited by {a_name}");
+    let typing_into = |cx: &TestCx| -> Result<String> {
+        cx.update(move |window, cx| {
+            format!(
+                "a text field focused: {}; editing {:?}; the box's draft {:?}",
+                decibell_text::input::text_field_focused(window),
+                list(cx).and_then(|l| l.read(cx).editing()),
+                model(cx).chat.drafts.read(cx).get(&decibell_model::chat::DraftKey::Dm(peer)).to_string()
+            )
+        })
+    };
+    let before = typing_into(cx)?;
     cx.keystroke("ctrl-a")?;
     cx.type_text(&edited)?;
+    let typed = typing_into(cx)?;
     cx.keystroke("enter")?;
     {
         let edited = edited.clone();
-        wait_for(cx, Duration::from_secs(10), "the edit's echo", move |cx| {
+        let echoed = wait_for(cx, Duration::from_secs(10), "the edit's echo", move |cx| {
             conversation_rows(peer, cx).iter().any(|m| m.id == own && *m.content == edited && m.edited_at > 0)
         })
-        .await?;
+        .await;
+        if let Err(e) = echoed {
+            bail!("{e:#} (before typing: {before}; after: {typed}; {window_state})");
+        }
     }
     cx.log("ArrowUp: our last message edited inline, Enter saved it (edited)");
     // A draft per conversation: kept in the model, back in the box when the conversation is again.
@@ -1070,6 +1095,10 @@ async fn e2ee_ready(cx: &TestCx) -> Result<()> {
     })?;
     let t = wait_for(cx, Duration::from_secs(30), "the keys", |cx| model(cx).live.e2ee.read(cx).status == E2eeStatus::Ready).await?;
     cx.log(format_args!("{mode:?}: ready after {} ms", t.as_millis()));
+    // The passphrase dialog (the settings crate's overlay) takes every click while it is open and
+    // for its 300 ms fade: a test that clicks next must not land on its backdrop.
+    wait_for(cx, Duration::from_secs(10), "the passphrase dialog to close", |cx| model(cx).live.e2ee.read(cx).passphrase.is_none()).await?;
+    cx.sleep(Duration::from_millis(400)).await;
     Ok(())
 }
 

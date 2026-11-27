@@ -503,6 +503,42 @@ impl Changes {
         self.latency.get() + self.e2ee.get() + self.other.get()
     }
 
+    /// Every store of the model that notified meanwhile (a frame drawn with nothing on screen
+    /// changed has a cause among them: a store read while drawing notifies, GPUI draws).
+    fn watch_all(cx: &TestCx) -> Result<(std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<&'static str, u32>>>, Vec<gpui::Subscription>)> {
+        let counts: std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<&'static str, u32>>> = Default::default();
+        let subs = cx.update(|_, cx| {
+            let m = model(cx);
+            let v = &m.live.voice;
+            let mut subs = Vec::new();
+            macro_rules! watch {
+                ($($name:literal => $entity:expr),* $(,)?) => {
+                    $(
+                        let c = counts.clone();
+                        subs.push(cx.observe(&$entity, move |_, _| *c.borrow_mut().entry($name).or_default() += 1));
+                    )*
+                };
+            }
+            watch!(
+                "auth" => m.auth, "users" => m.users, "nav" => m.nav, "overlays" => m.overlays, "settings" => m.settings,
+                "layout" => m.layout, "servers" => m.servers, "connections" => m.connections, "communities" => m.communities,
+                "toasts" => m.toasts, "update" => m.update, "answers" => m.answers,
+                "voice.session" => v.session, "voice.participants" => v.participants, "voice.rosters" => v.rosters,
+                "voice.speaking" => v.speaking, "voice.input_level" => v.input_level, "voice.stats" => v.stats,
+                "voice.streams" => v.streams, "voice.thumbnails" => v.thumbnails, "voice.watching" => v.watching,
+                "voice.stream_views" => v.stream_views, "voice.own_stream" => v.own_stream, "voice.devices" => v.devices,
+                "voice.codecs" => v.codecs, "calls" => m.live.calls, "presence.statuses" => m.live.presence.statuses,
+                "presence.messages" => m.live.presence.messages, "presence.own" => m.live.presence.own,
+                "presence.interest" => m.live.presence.interest, "presence.auto_away" => m.live.presence.auto_away,
+                "presence.avatars" => m.live.presence.avatars, "friends" => m.live.friends, "e2ee" => m.live.e2ee,
+                "hotkeys" => m.live.hotkeys, "devices" => m.live.devices, "transfers" => m.live.transfers,
+                "cues" => m.live.cues, "notices" => m.live.notices,
+            );
+            subs
+        })?;
+        Ok((counts, subs))
+    }
+
     fn describe(&self) -> String {
         format!(
             "{} latency changes, {} MLS state changes, {} roster / participant / stream / presence changes",
@@ -624,11 +660,21 @@ async fn check_join(cx: TestCx) -> Result<()> {
     ensure!(left.drawn >= 1, "the peer's leaving drew nothing");
     let before = settle_drawn(&cx).await?;
     let changes = Changes::start(&cx)?;
+    let (stores, _all) = Changes::watch_all(&cx)?;
+    let active = cx.update(|window, _| window.is_window_active())?;
     log::info!("[voice-test] idle window starts");
     cx.sleep(Duration::from_secs(5)).await;
     log::info!("[voice-test] idle window ends");
     let idle = cx.frames()?.since(before);
-    cx.log(format_args!("then {} drawn / {} presented in 5 s; {}", idle.drawn, idle.presented, changes.describe()));
+    let notified: Vec<String> = stores.borrow().iter().map(|(k, n)| format!("{k} {n}")).collect();
+    cx.log(format_args!(
+        "then {} drawn / {} presented in 5 s; {}; stores that notified: [{}]; window active {active} → {}",
+        idle.drawn,
+        idle.presented,
+        changes.describe(),
+        notified.join(", "),
+        cx.update(|window, _| window.is_window_active())?
+    ));
     ensure!(idle.drawn as u32 <= changes.count(), "frames drawn while nothing on screen changed");
     peer.cue("quit")?;
     leave(&cx).await?;

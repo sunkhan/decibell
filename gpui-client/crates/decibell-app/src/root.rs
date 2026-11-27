@@ -40,8 +40,20 @@ impl Root {
         }
         let subscriptions = [
             // A focused element went away (a pane, a closed dialog that had nothing to give the
-            // focus back to): the root takes it again.
-            cx.on_focus_lost(window, |this: &mut Root, window, cx| this.focus.focus(window, cx)),
+            // focus back to): the root takes it again. Not from a handle focused meanwhile that
+            // the frame didn't draw yet (the inline editor focuses itself as it is built): only if
+            // it still isn't drawn after the next frame.
+            cx.on_focus_lost(window, |this: &mut Root, window, cx| match window.focused(cx) {
+                None => this.focus.focus(window, cx),
+                Some(handle) => {
+                    let root = this.focus.clone();
+                    window.on_next_frame(move |window, cx| {
+                        if window.focused(cx).is_none_or(|f| f == handle && !f.contains_focused(window, cx)) {
+                            root.focus(window, cx);
+                        }
+                    });
+                }
+            }),
             crate::hotkeys::release_on_blur(window, cx),
         ];
         Self { content, os_title: SharedString::default(), focus, _subscriptions: subscriptions, overlay: None }

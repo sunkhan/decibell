@@ -1110,6 +1110,20 @@ Measured by the wiring agent with `tools/perf/measure.sh` (20 s settle + 60 s), 
 - **`message_stamp` costs ~117 ns** a call, of which ~58 ns is formatting and the rest `chrono::Local`'s
   zone conversion (it re-checks `TZ` / `/etc/localtime` at most once a second per thread). Rows cache
   their labels, so it is not on the scroll path; cache the local time per message if a profile ever shows it.
+- **The root's `on_focus_lost` (integrate-d)**: GPUI calls it when the focused handle isn't in the frame just drawn,
+  which is also the case for one frame after a view focuses a handle it is still building (the message list's
+  inline editor focuses itself as its row is laid out): the root took the focus from it, and the edit's keys went
+  to the composer (`dm-send-receive`: "timed out waiting for the edit's echo", every run). The root now takes the
+  focus at once only when nothing is focused, and from a focused handle only if it still isn't drawn after the
+  next frame. Still open: with a modal up, an explicit `window.blur()` gives the focus to the root, outside the
+  modal's layer, so its Esc / Enter / Tab no longer reach it (a press in a modal focuses its layer, so only an
+  explicit blur gets there); a fix would hand the focus to the topmost open modal instead.
+- **Self-test harness (integrate-d)**: `TestCx::settle` waits for draws to stop; presents that run on without
+  draws for 1.5 s are a present-only animation (the active tile's glow breathes while the window has the
+  desktop's focus, a speaking ring) and no longer keep it waiting (the content tests failed on that whenever the
+  test window got the focus). A test that could not measure returns `decibell_harness::inconclusive(reason)`
+  and is reported INCONCLUSIVE, apart from passes and failures; a parent relaying a `--check` child's
+  INCONCLUSIVE line is INCONCLUSIVE too.
 
 - **Leaving a community right after joining it** (owner's side agent, 2026-11-26). Central tells every device of
   an account "you joined" (MEMBERSHIP_ADDED) a moment after a join, the joining device included; the core waits

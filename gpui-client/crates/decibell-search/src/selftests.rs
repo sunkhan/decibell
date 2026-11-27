@@ -916,11 +916,13 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     let active = cx.update(|window, _| window.is_window_active())?;
     let (f, clean) = quiet(&cx, 3).await?;
     cx.log(format_args!("box focused (window active: {active}): {} drawn / {} presented in 3 s", f.drawn, f.presented));
+    let mut unmeasured = Vec::new();
     if clean {
         // The caret: 2 frames a second while the window is active (it may turn active meanwhile).
         ensure!(f.drawn <= 8, "more than the caret's frames");
     } else {
-        cx.log("INCONCLUSIVE: every try had core events or focus changes (a busy shared stack)");
+        cx.log("the box focused: every try had core events or focus changes (a busy shared stack)");
+        unmeasured.push("the focused box");
     }
     // Results open, the box blurred: nothing.
     let mut s = Searcher::new();
@@ -937,7 +939,8 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     if clean {
         ensure!(f.drawn == 0, "the open results drew {} frames at rest", f.drawn);
     } else {
-        cx.log("INCONCLUSIVE: every try had core events or focus changes (a busy shared stack)");
+        cx.log("the open results: every try had core events or focus changes (a busy shared stack)");
+        unmeasured.push("the open results");
     }
     // Closed: the panel's view is gone (no state, no rows).
     let weak = cx.update(|_, cx| crate::shown_results(cx).map(|r| r.downgrade()))?.context("no results view")?;
@@ -948,6 +951,10 @@ async fn check_idle(cx: TestCx) -> Result<()> {
     let looking = cx.update(|_, cx| crate::shown_box(cx).is_some_and(|b| b.read(cx).looking_up()))?;
     ensure!(!looking, "a member lookup outlived its token");
     cx.log("closed: the results view was dropped");
+    if !unmeasured.is_empty() {
+        // Never a pass without the measurement: say which rest couldn't be measured.
+        return Err(decibell_harness::inconclusive(format!("{} at rest: every try disturbed by the shared stack or the desktop", unmeasured.join(" and "))));
+    }
     Ok(())
 }
 
@@ -994,5 +1001,5 @@ async fn check_typing_cost(cx: TestCx) -> Result<()> {
         ensure!(arrived > 0, "the message list drew {list_drew} times while typing in the box, with no core event to redraw it");
         last = format!("the message list drew {list_drew} times while typing; {arrived} core events from the shared stack arrived meanwhile");
     }
-    bail!("three tries disturbed by the shared stack ({last})")
+    Err(decibell_harness::inconclusive(format!("three tries disturbed by the shared stack ({last})")))
 }

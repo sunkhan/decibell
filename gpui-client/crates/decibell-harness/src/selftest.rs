@@ -27,6 +27,27 @@ pub struct SelfTest {
     pub run: fn(TestCx) -> LocalBoxFuture<'static, Result<()>>,
 }
 
+/// A self-test that could not measure what it is for, through no fault of the code under test:
+/// another window took the desktop's focus during an idle measurement, the real pointer rested on
+/// the window, … Return it (`Err(inconclusive("why").into())`) instead of failing; the run reports
+/// it as INCONCLUSIVE with the reason, apart from passes and failures. Never return it for
+/// something the code did, and never pass a test that didn't measure.
+#[derive(Debug, Clone)]
+pub struct Inconclusive(pub String);
+
+impl std::fmt::Display for Inconclusive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "inconclusive: {}", self.0)
+    }
+}
+
+impl std::error::Error for Inconclusive {}
+
+/// See [`Inconclusive`].
+pub fn inconclusive(reason: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::Error::new(Inconclusive(reason.to_string()))
+}
+
 /// Frame counters of the test window (`Window::frames_drawn` / `frames_presented`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Frames {
@@ -87,19 +108,27 @@ impl TestCx {
         self.cx.background_executor().timer(duration).await;
     }
 
-    /// Waits until the window has drawn and presented nothing for 250 ms and returns the
-    /// counters. Fails after 10 s of continuous drawing.
+    /// Waits until the window has drawn nothing for 250 ms and returns the counters: presented
+    /// nothing either for 250 ms, or only presented (no draw) for 1.5 s since the last draw, as a
+    /// present-only animation does (the active server tile's glow breathes while the window has
+    /// the desktop's focus, a speaking ring: they re-present a retained scene and never draw).
+    /// GPUI's own presents after a burst of input stop within 1 s. Fails after 10 s of drawing.
     pub async fn settle(&self) -> Result<Frames> {
         let started = Instant::now();
         let mut last = self.frames()?;
-        let mut quiet_since = Instant::now();
+        let (mut last_draw, mut last_present) = (Instant::now(), Instant::now());
         loop {
             self.sleep(Duration::from_millis(50)).await;
             let now = self.frames()?;
-            if now != last {
-                last = now;
-                quiet_since = Instant::now();
-            } else if quiet_since.elapsed() >= Duration::from_millis(250) {
+            if now.drawn != last.drawn {
+                last_draw = Instant::now();
+            }
+            if now.presented != last.presented {
+                last_present = Instant::now();
+            }
+            last = now;
+            let quiet = |since: Instant, ms: u64| since.elapsed() >= Duration::from_millis(ms);
+            if quiet(last_draw, 250) && (quiet(last_present, 250) || quiet(last_draw, 1500)) {
                 return Ok(now);
             }
             if started.elapsed() > Duration::from_secs(10) {
@@ -219,10 +248,27 @@ impl TestCx {
         })
     }
 
-    /// A line in the test's log.
+    /// A line in the test's log. A parent relaying a `--check` child's log through here notes a
+    /// child's INCONCLUSIVE: the parent's own pass then reads INCONCLUSIVE too (see
+    /// [`run_selftests`]).
     pub fn log(&self, message: impl std::fmt::Display) {
-        println!("    {message}");
+        let line = message.to_string();
+        if let Some((_, reason)) = line.split_once(": INCONCLUSIVE (") {
+            let reason = reason.split_once("): ").map_or(reason, |(_, r)| r).to_string();
+            RELAYED_INCONCLUSIVE.with(|r| {
+                let mut r = r.borrow_mut();
+                if r.is_none() {
+                    *r = Some(reason);
+                }
+            });
+        }
+        println!("    {line}");
     }
+}
+
+thread_local! {
+    /// A child's INCONCLUSIVE relayed by the test running now ([`TestCx::log`]).
+    static RELAYED_INCONCLUSIVE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Runs the tests named by `selection` (`all`, one name, or names separated by commas) in
@@ -247,14 +293,25 @@ pub async fn run_selftests(tests: Vec<SelfTest>, selection: &str, cx: TestCx) ->
         selected
     };
 
-    let mut failed = 0;
+    let (mut failed, mut unmeasured) = (0, 0);
     for test in &selected {
         println!("selftest {}: {}", test.name, test.about);
         let started = Instant::now();
+        RELAYED_INCONCLUSIVE.with(|r| r.borrow_mut().take());
         let result = (test.run)(cx.clone()).await;
         let ms = started.elapsed().as_millis();
+        // A parent whose child said INCONCLUSIVE passed only its own part: it is inconclusive too.
+        let result = match (result, RELAYED_INCONCLUSIVE.with(|r| r.borrow_mut().take())) {
+            (Ok(()), Some(reason)) => Err(inconclusive(format!("the app's check: {reason}"))),
+            (result, _) => result,
+        };
         match result {
             Ok(()) => println!("selftest {}: PASS ({ms} ms)", test.name),
+            Err(error) if error.downcast_ref::<Inconclusive>().is_some() => {
+                unmeasured += 1;
+                let reason = error.downcast_ref::<Inconclusive>().map(|i| i.0.clone()).unwrap_or_default();
+                println!("selftest {}: INCONCLUSIVE ({ms} ms): {reason}", test.name);
+            }
             Err(error) => {
                 failed += 1;
                 println!("selftest {}: FAIL ({ms} ms): {error:#}", test.name);
@@ -262,8 +319,8 @@ pub async fn run_selftests(tests: Vec<SelfTest>, selection: &str, cx: TestCx) ->
         }
     }
     println!(
-        "selftest: {} passed, {failed} failed",
-        selected.len() - failed
+        "selftest: {} passed, {failed} failed, {unmeasured} inconclusive",
+        selected.len() - failed - unmeasured
     );
     failed == 0
 }

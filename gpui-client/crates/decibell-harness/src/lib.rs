@@ -23,4 +23,4 @@ mod selftest;
 pub mod test_audio;
 
 pub use screens::Screen;
-pub use selftest::{Frames, SelfTest, TestCx, run_selftests};
+pub use selftest::{Frames, Inconclusive, SelfTest, TestCx, inconclusive, run_selftests};
