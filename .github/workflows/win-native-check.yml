@@ -321,19 +321,21 @@ jobs:
             "themes,window-frame"
             "video-probe"
             "kit-idle,kit-switch,kit-select,kit-modal,kit-confirm,kit-scroll,kit-toast"
+            "input-typing,input-undo,input-ime,input-atoms,input-bytes-cap,input-select-filter,input-caret-idle"
             "chat-history,chat-switch,chat-resize,chat-selection,chat-rows,chat-idle,chat-hover"
+            "chat-scroll-spec"
             "input-clipboard,input-password"
             "hotkeys-focused,hotkeys-layout"
+            "join-status-picker,join-dm-composer"
+            "picture-editor,settings-narrow,server-settings-idle"
             "content-scroll-fixture,content-rows"
+            "profile-guard,single-instance,deep-link-arg,hotkey-cli"
             "render-cost,encoder-software"
           )
-          # group | why it may still fail
+          # group | why it may still fail, or why it is expected to say SKIP here
           allowed=(
-            "input-typing,input-undo,input-ime,input-atoms,input-bytes-cap,input-select-filter,input-caret-idle|input-atoms needs the emoji pictures, first fetched for this job in the run after 45998066577"
-            "chat-scroll-spec|its comparison was exact where a wheel line is an f32; corrected, not yet run"
-            "join-status-picker,join-dm-composer|the status picker's search needs the emoji data, first fetched in the run after 45998066577"
-            "picture-editor,settings-narrow,server-settings-idle|server-settings-idle drew one frame in its first window on the runner; it now measures again, not yet run"
-            "profile-guard,single-instance,deep-link-arg,hotkey-cli,attention,taskbar-progress,keyring-label,window-state|first run with a development-marked executable: until now these skipped on Windows"
+            "window-state|restoring a maximised window needed GPUI patch 0022 (zoom toggles on Windows), written after run 46016294369 and not yet run"
+            "attention,taskbar-progress,keyring-label|SKIP by design on the runner: an incoming call needs the local stack, the launcher entry and the Secret Service are Linux's (their Windows sides are the owner's: checks section 7)"
           )
           run_group() {
             echo "=== decibell --selftest $1" | tee -a selftests.log
@@ -358,7 +360,12 @@ jobs:
           GPUI_DISABLE_DIRECT_COMPOSITION=1 timeout 600 target/debug/decibell.exe --selftest boot >> selftests.log 2>&1
           echo "=== exit $? (boot, no DirectComposition)" | tee -a selftests.log
           echo "=== summary" >> selftests.log
-          grep -a -E '^selftest [a-z0-9-]+: (PASS|FAIL|SKIP)|^    SKIP|^=== (exit|again|allowed)' selftests.log > selftests.summary
+          grep -a -E '^selftest [a-z0-9-]+: (PASS|FAIL|SKIP|INCONCLUSIVE)|^=== (exit|again|allowed)' selftests.log > selftests.summary
+          # Each result on its own count: a test that skipped is not a pass (the harness says SKIP
+          # in its result line). A group run twice counts twice.
+          for result in PASS FAIL SKIP INCONCLUSIVE; do
+            printf '=== %s: %s\n' "$result" "$(grep -a -c -E "^selftest [a-z0-9-]+: $result" selftests.summary)" >> selftests.summary
+          done
           cat selftests.summary | tee -a selftests.log
           if [ ${#failed[@]} -gt 0 ]; then
             printf '=== FATAL: failed twice: %s\n' "${failed[@]}" | tee -a selftests.log
