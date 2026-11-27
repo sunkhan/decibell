@@ -210,21 +210,41 @@ jobs:
           cp tools/build-ffmpeg.sh target/packages/build-ffmpeg.sh
           ls -la target/packages
 
+      # Each package holds the program and says what it is: resources/install.json's kind decides what
+      # the updater does (an AppImage replaces itself, the others only say an update is available).
       - name: Check the packages
         run: |
-          set -e
+          set -eo pipefail
           v="${{ needs.version.outputs.version }}"
+          kind() { python3 -I -c 'import json, sys; d = json.load(sys.stdin); print(d["kind"], d["version"])'; }
           tar -tJf "target/packages/decibell-$v-linux-x86_64.tar.xz" | sort > target/tarball.txt
           for f in decibell resources/install.json share/applications/decibell.desktop share/icons/hicolor/256x256/apps/decibell.png licenses/THIRD_PARTY_LICENSES.md; do
             grep -qx "decibell-$v-linux-x86_64/$f" target/tarball.txt || { echo "::error::tarball lacks $f"; exit 1; }
           done
-          dpkg-deb --info "target/packages/decibell-native_${v}_amd64.deb"
-          dpkg-deb --contents "target/packages/decibell-native_${v}_amd64.deb"
+          tar -xJOf "target/packages/decibell-$v-linux-x86_64.tar.xz" "decibell-$v-linux-x86_64/resources/install.json" | kind > target/kind-tarball.txt
+          deb="target/packages/decibell-native_${v}_amd64.deb"
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb" | tee target/deb.txt
+          awk '{ $1 = $2 = $3 = $4 = $5 = ""; sub(/^ +/, ""); print }' target/deb.txt > target/deb-paths.txt
+          for f in ./usr/lib/decibell/decibell ./usr/lib/decibell/resources/install.json \
+                   ./usr/lib/decibell/licenses/THIRD_PARTY_LICENSES.md ./usr/share/applications/decibell.desktop \
+                   "./usr/bin/decibell -> ../lib/decibell/decibell"; do
+            grep -qxF "$f" target/deb-paths.txt || { echo "::error::the .deb lacks $f"; exit 1; }
+          done
+          dpkg-deb --fsys-tarfile "$deb" | tar -xOf - --wildcards '*usr/lib/decibell/resources/install.json' | kind > target/kind-deb.txt
           desktop-file-validate assets/linux/decibell.desktop
-          appimage="target/packages/Decibell-$v-x86_64.AppImage"
+          appimage="$PWD/target/packages/Decibell-$v-x86_64.AppImage"
           test -x "$appimage"
           APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --version | tee target/appimage-version.txt
           grep -qx "decibell $v" target/appimage-version.txt
+          rm -rf target/appimage-x && mkdir -p target/appimage-x
+          (cd target/appimage-x && "$appimage" --appimage-extract >/dev/null)
+          kind < target/appimage-x/squashfs-root/resources/install.json > target/kind-appimage.txt
+          for k in tarball deb appimage; do
+            echo "$k: install.json says $(cat "target/kind-$k.txt")"
+            grep -qx "$k $v" "target/kind-$k.txt" || { echo "::error::the $k's install.json isn't kind $k, version $v"; exit 1; }
+          done
+          rm -rf target/appimage-x
           # The install size from CI: the tarball's tree as it lands on disk.
           rm -rf target/unpacked && mkdir -p target/unpacked
           tar -xJf "target/packages/decibell-$v-linux-x86_64.tar.xz" -C target/unpacked
@@ -296,10 +316,15 @@ jobs:
 
       - name: Install FFmpeg via vcpkg
         shell: pwsh
+        # Every native command's exit code is checked: pwsh doesn't stop on one, and a failed fetch or
+        # checkout would otherwise build FFmpeg from the runner's own vcpkg, unpinned, and pass.
         run: |
           git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --quiet origin
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git -C "$env:VCPKG_INSTALLATION_ROOT" checkout e5a1490e1409d175932ef6014519e9ae149ddb7c
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "ffmpeg[nvcodec,amf,qsv,dav1d,svt-av1]:x64-windows" `
             "--overlay-ports=$env:GITHUB_WORKSPACE\gpui-client\tools\vcpkg-overlay"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -348,9 +373,7 @@ jobs:
 
       - name: Install size (tools/perf/windows/install-size.ps1)
         shell: pwsh
-        run: |
-          $script = "..\tools\perf\windows\install-size.ps1"
-          if (Test-Path $script) { & $script target\packages\stage } else { "install-size.ps1 is not on this commit" }
+        run: ..\tools\perf\windows\install-size.ps1 target\packages\stage
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
@@ -420,12 +443,29 @@ jobs:
           fi
           gh release upload native-latest --repo "$GITHUB_REPOSITORY" --clobber out/decibell-native.json $( [ -f out/decibell-native.json.sig ] && echo out/decibell-native.json.sig )
 
+      # It passes only on an answer: a failed read (retried) fails the run, so an unchecked release
+      # never looks checked.
       - name: Guard Electron's updater (releases/latest must stay an Electron release)
         run: |
-          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
-          echo "releases/latest = ${latest:-<none>}"
+          set -uo pipefail
+          latest=""
+          for attempt in 1 2 3 4 5; do
+            if latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" && [ -n "$latest" ]; then break; fi
+            latest=""
+            sleep 10
+          done
+          repair="gh release edit <the newest ev* tag> --latest --repo $GITHUB_REPOSITORY"
+          if [ -z "$latest" ]; then
+            echo "::error::could not read releases/latest, so nothing confirms that Electron's updater still works. Check by hand: gh api repos/$GITHUB_REPOSITORY/releases/latest --jq .tag_name must print an ev* tag; if it doesn't: $repair"
+            exit 1
+          fi
+          echo "releases/latest = $latest"
           case "$latest" in
+            ev*) ;;
             native-*)
-              echo "::error::GitHub now flags the native release $latest as the repository's latest: every Electron install's updater reads releases/latest and will fail (ERR_UPDATER_CHANNEL_FILE_NOT_FOUND: latest.yml) until this is repaired. Repair: gh release edit <the newest ev* tag> --latest --repo $GITHUB_REPOSITORY"
+              echo "::error::GitHub now flags the native release $latest as the repository's latest: every Electron install's updater reads releases/latest and will fail (ERR_UPDATER_CHANNEL_FILE_NOT_FOUND: latest.yml) until this is repaired. Repair: $repair"
+              exit 1 ;;
+            *)
+              echo "::error::releases/latest is $latest, not an Electron (ev*) release: Electron's updater reads its latest*.yml. Repair: $repair"
               exit 1 ;;
           esac
