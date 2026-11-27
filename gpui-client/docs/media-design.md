@@ -303,11 +303,14 @@ the pointer over the whole window while the button is held).
 
 ## 8. Open
 
-- **`media-keys` does not pass** as of this writing: its first half does (a press focuses the audio card, Space
-  plays and pauses, a refused source shows the "Failed to load" line and grows the card by 26 px, Space opens
-  the player again), then the fixture window never comes to rest before the retry click (2 frames in the 2 s
-  before; continuous drawing during `rest`). Not root-caused; the video keys, the fullscreen download button
-  and the fade's "0 frames after it" assertions behind that point have therefore not run in this tree.
+- **Fullscreen by the F key with a resting pointer** shows the controls (and the download button) only once
+  the pointer moves: the fullscreen stage is another element than the card's and starts un-hovered. The
+  renderer's wrapper is the same element in both states and keeps its hover.
+- **Deleting the only message of an encrypted channel leaves its row drawn** (seen by `media-sealed` in the
+  stack's `#vault`; the server did delete it). Not playback's; for whoever owns the list.
+- **The captures** of the cards in seven themes beside Electron pages are not made: a capture renders one
+  headless frame and no picture is decoded there. What a capture screen needs is a `decibell_video::Still`
+  made from a fixture frame uploaded into a slot (the poster and the stage both draw one).
 - **10-bit on NVDEC, VA-API and D3D11VA**: refused at open, software decodes instead (Vulkan Video is the first
   choice on all three Linux vendors, so this is the fallback's fallback; on Windows it means 10-bit is software
   until P010 slots are written in `windows/slots.rs`).

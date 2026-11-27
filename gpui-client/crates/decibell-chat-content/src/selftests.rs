@@ -1654,16 +1654,14 @@ async fn check_media_keys(cx: TestCx) -> Result<()> {
         wait_for(&w, Duration::from_secs(10), "the second failure", move |cx| p.read(cx).audio_error(NOTE).is_some()).await?;
         // A click on the button tries again; this time the file is there.
         refuse.store(false, Ordering::SeqCst);
-        if std::env::var_os("DECIBELL_MEDIA_KEYS_TRACE").is_some() {
-            let (notified, _) = store_notifications(&w, Duration::from_secs(2)).await?;
-            cx.log(format_args!("TRACE after the second failure, 2 s: {notified}; threads {:?}; audio {:?}", media_threads(), w.update(|_, cx| (audio.read(cx).playing, audio.read(cx).time_secs))?));
-        }
         rest(&w, &list).await?;
         let button = probes::bounds(&play_key).context("the audio card's play button")?;
         w.click(button.center())?;
         let a = audio.clone();
         wait_for(&w, Duration::from_secs(10), "the retry to play", move |cx| a.read(cx).playing && a.read(cx).time_secs > 0.3).await?;
-        rest(&w, &list).await?;
+        // It plays: its card redraws four times a second (the running time), so the window is
+        // not waited to rest here; the row's new height is in by the next frames.
+        w.sleep(Duration::from_millis(600)).await;
         let height_after = probes::bounds(&card_key).context("the audio card")?.size.height;
         ensure!(w.update(|_, cx| playback.read(cx).audio_error(NOTE))?.is_none(), "the error stayed after a retry that plays");
         ensure!(height_after == height_before, "the card kept its error line's height ({height_after:?})");
@@ -1774,6 +1772,10 @@ async fn check_media_keys(cx: TestCx) -> Result<()> {
         // ── Fullscreen: F, the download button, Escape ──
         w.keystroke("f")?;
         ensure!(w.update(|_, cx| playback.read(cx).fullscreen)?, "F did not go fullscreen");
+        // The stage is another element now (the overlay): the pointer has to move on it for the
+        // controls, and the button with them, to show.
+        w.sleep(Duration::from_millis(300)).await;
+        w.mouse_move(point(at.x + px(9.), at.y + px(4.)))?;
         wait_for(&w, Duration::from_secs(5), "the fullscreen download button", |_| probes::bounds("media-download").is_some()).await?;
         w.sleep(Duration::from_millis(900)).await;
         let (button, viewport, is_fullscreen) = w.update(|window, _| (probes::bounds("media-download"), window.viewport_size(), window.is_fullscreen()))?;
