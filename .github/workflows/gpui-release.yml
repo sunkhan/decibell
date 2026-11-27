@@ -1,0 +1,406 @@
+name: Native Client Release
+
+# The GPUI (native) client's packages: gpui-client/PACKAGING.md.
+#
+# Triggers:
+# - a tag `native-v<VER>` (VER = electron-client/package.json's version at that commit, the one
+#   version site): builds, packages, and publishes a GitHub release `native-v<VER>` that is NEVER
+#   the repository's "latest" (Electron's updater reads `releases/latest`; see "Releases while both
+#   clients ship" in PACKAGING.md), then updates the native updater's channel (the fixed release
+#   `native-latest`, a pre-release, holding `decibell-native.json` + `.sig`);
+# - a push to `gpui-client` touching the packaging (the paths below), or a manual run: the same
+#   build and packaging as a DRY RUN. It publishes nothing: no release, no tag, no channel update,
+#   no baked secrets; the packages are this run's artifacts only.
+#
+# Never `v*` (the dead Tauri workflow) or `ev*` (Electron Release).
+
+on:
+  push:
+    tags:
+      - "native-v*"
+    branches:
+      - gpui-client
+    paths:
+      - ".github/workflows/gpui-release.yml"
+      - "gpui-client/packaging/**"
+      - "gpui-client/crates/decibell-release/**"
+      - "gpui-client/crates/decibell-app/Cargo.toml"
+      - "gpui-client/crates/decibell-app/build.rs"
+      - "gpui-client/crates/decibell-app/build/**"
+      - "gpui-client/crates/decibell-app/windows/**"
+      - "gpui-client/assets/linux/**"
+      - "aur/decibell-native-bin/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpui-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # A tag run publishes; anything else is a dry run.
+  PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/native-v') }}
+  # The updater's public key (base64 of the 32 raw Ed25519 bytes; PACKAGING.md, "Signing key"):
+  # a repository variable, not a secret (it is public by nature). Unset: feeds are not signed.
+  DECIBELL_UPDATE_PUBLIC_KEY: ${{ vars.UPDATE_PUBLIC_KEY }}
+  CARGO_BUILD_JOBS: 4
+  # Symbols stay in the build; the packaging step moves them to `.debug` and strips the binary.
+  CARGO_PROFILE_RELEASE_STRIP: "false"
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The one version, and the tag's
+        id: v
+        shell: bash
+        run: |
+          version="$(python3 -I -c 'import json; print(json.load(open("electron-client/package.json"))["version"])')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "version $version (publish: $PUBLISH)"
+          if [ "$PUBLISH" = true ] && [ "${GITHUB_REF_NAME}" != "native-v$version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} but electron-client/package.json says $version: tag native-v$version"
+            exit 1
+          fi
+
+  linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: gpui-client
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: gpui-client
+          shared-key: gpui-release-linux
+
+      - name: Cache the patched GPUI sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            gpui-client/vendor/zed
+            gpui-client/vendor/gpui-src
+            gpui-client/vendor/gpui-src.stamp
+          key: gpui-src-${{ hashFiles('gpui-client/GPUI_PIN', 'gpui-client/patches/*.patch', 'gpui-client/tools/fetch-gpui.sh') }}
+
+      - name: Fetch and patch GPUI
+        run: tools/fetch-gpui.sh
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Node.js (asset fetcher)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install system packages
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev libvulkan-dev \
+            libasound2-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev libopus-dev libdbus-1-dev \
+            libva-dev libdrm-dev pkg-config cmake ninja-build python3-venv xz-utils desktop-file-utils file
+
+      # The client's static LGPL FFmpeg (tools/build-ffmpeg.sh) and the source archives it was built
+      # from (published with a release: the LGPL's relinking materials, PACKAGING.md).
+      - name: Cache the FFmpeg prefix and its sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            gpui-client/vendor/ffmpeg
+            gpui-client/vendor/ffmpeg-build/dl
+          key: gpui-ffmpeg-linux-${{ hashFiles('gpui-client/tools/build-ffmpeg.sh') }}
+
+      - name: Build FFmpeg
+        run: tools/build-ffmpeg.sh
+
+      # Twemoji and the emoji picker's data are fetched, not committed (pinned by SRI).
+      - name: Fetch the assets
+        run: node tools/fetch-assets.mjs
+
+      - name: Unit tests of the release crate
+        run: cargo test --locked -p decibell-release
+
+      - name: Build the ship binary
+        run: cargo build --locked --release -p decibell-app --no-default-features --features ship
+
+      - name: Bake Sentry DSN and GIF key (releases only)
+        if: env.PUBLISH == 'true'
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          GIF_API_KEY: ${{ secrets.GIF_API_KEY }}
+          GIF_API_PROVIDER: ${{ vars.GIF_API_PROVIDER || 'klipy' }}
+        run: |
+          mkdir -p target/resources
+          if [ -n "$SENTRY_DSN" ]; then echo "{\"dsn\":\"$SENTRY_DSN\"}" > target/resources/sentry.json; echo "[sentry] DSN baked"; fi
+          if [ -n "$GIF_API_KEY" ]; then echo "{\"provider\":\"$GIF_API_PROVIDER\",\"key\":\"$GIF_API_KEY\"}" > target/resources/gifs.json; echo "[gifs] $GIF_API_PROVIDER key baked"; fi
+
+      # appimagetool and the type-2 runtime: a release requires their SHA-256 pinned in repository
+      # variables; a dry run without them prints the values to pin.
+      - name: Fetch the AppImage tools
+        env:
+          TOOL_URL: ${{ vars.APPIMAGETOOL_URL || 'https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage' }}
+          TOOL_SHA256: ${{ vars.APPIMAGETOOL_SHA256 }}
+          RUNTIME_URL: ${{ vars.APPIMAGE_RUNTIME_URL || 'https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64' }}
+          RUNTIME_SHA256: ${{ vars.APPIMAGE_RUNTIME_SHA256 }}
+        run: |
+          mkdir -p target/appimage-tools && cd target/appimage-tools
+          curl -fsSL -o appimagetool "$TOOL_URL"
+          curl -fsSL -o runtime "$RUNTIME_URL"
+          chmod +x appimagetool
+          for pair in "appimagetool:$TOOL_SHA256" "runtime:$RUNTIME_SHA256"; do
+            file="${pair%%:*}" want="${pair#*:}" got="$(sha256sum "$file" | cut -d' ' -f1)"
+            echo "$file sha256 $got"
+            if [ -n "$want" ] && [ "$got" != "$want" ]; then echo "::error::$file: sha256 $got, pinned $want"; exit 1; fi
+            if [ -z "$want" ] && [ "$PUBLISH" = true ]; then echo "::error::pin $file's sha256 in a repository variable before a release"; exit 1; fi
+          done
+
+      - name: Package
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          resources=""
+          [ -d target/resources ] && resources="--resources target/resources"
+          packaging/linux/package.sh --binary target/release/decibell --out target/packages $resources \
+            --appimagetool target/appimage-tools/appimagetool --runtime target/appimage-tools/runtime
+          # The LGPL's relinking materials: the exact sources of the linked FFmpeg, dav1d, SVT-AV1.
+          cp vendor/ffmpeg-build/dl/ffmpeg-*.tar.xz vendor/ffmpeg-build/dl/dav1d-*.tar.bz2 \
+             vendor/ffmpeg-build/dl/SVT-AV1-*.tar.gz target/packages/
+          cp tools/build-ffmpeg.sh target/packages/build-ffmpeg.sh
+          ls -la target/packages
+
+      - name: Check the packages
+        run: |
+          set -e
+          v="${{ needs.version.outputs.version }}"
+          tar -tJf "target/packages/decibell-$v-linux-x86_64.tar.xz" | sort > target/tarball.txt
+          for f in decibell resources/install.json share/applications/decibell.desktop share/icons/hicolor/256x256/apps/decibell.png licenses/THIRD_PARTY_LICENSES.md; do
+            grep -qx "decibell-$v-linux-x86_64/$f" target/tarball.txt || { echo "::error::tarball lacks $f"; exit 1; }
+          done
+          dpkg-deb --info "target/packages/decibell-native_${v}_amd64.deb"
+          dpkg-deb --contents "target/packages/decibell-native_${v}_amd64.deb"
+          desktop-file-validate assets/linux/decibell.desktop
+          appimage="target/packages/Decibell-$v-x86_64.AppImage"
+          test -x "$appimage"
+          APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --version | tee target/appimage-version.txt
+          grep -qx "decibell $v" target/appimage-version.txt
+          ../tools/perf/install-size.sh --label "native tarball" "target/packages/decibell-$v-linux-x86_64.tar.xz" || true
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-linux
+          path: |
+            gpui-client/target/packages/*.tar.xz
+            gpui-client/target/packages/*.AppImage
+            gpui-client/target/packages/*.deb
+            gpui-client/target/packages/*.debug
+            gpui-client/target/packages/*.tar.bz2
+            gpui-client/target/packages/*.tar.gz
+            gpui-client/target/packages/build-ffmpeg.sh
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: gpui-client
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: gpui-client
+          shared-key: gpui-release-windows
+
+      - name: Cache the patched GPUI sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            gpui-client/vendor/zed
+            gpui-client/vendor/gpui-src
+            gpui-client/vendor/gpui-src.stamp
+          key: gpui-src-${{ hashFiles('gpui-client/GPUI_PIN', 'gpui-client/patches/*.patch', 'gpui-client/tools/fetch-gpui.sh') }}
+
+      - name: Fetch and patch GPUI
+        shell: bash
+        run: tools/fetch-gpui.sh
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Node.js (asset fetcher)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The same vcpkg pin, overlay and binary cache as the Windows Native Check's gpui-client job.
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-archives-ffmpeg-e5a1490e-svtav1-x64-windows-${{ hashFiles('gpui-client/tools/vcpkg-overlay/**') }}
+
+      - name: Install FFmpeg via vcpkg
+        shell: pwsh
+        run: |
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --quiet origin
+          git -C "$env:VCPKG_INSTALLATION_ROOT" checkout e5a1490e1409d175932ef6014519e9ae149ddb7c
+          & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "ffmpeg[nvcodec,amf,qsv,dav1d,svt-av1]:x64-windows" `
+            "--overlay-ports=$env:GITHUB_WORKSPACE\gpui-client\tools\vcpkg-overlay"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" | Select-Object Name, Length
+
+      - name: Fetch the assets
+        run: node tools/fetch-assets.mjs
+
+      - name: Unit tests of the release crate
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        shell: bash
+        run: |
+          export PATH="$VCPKG_ROOT/installed/x64-windows/bin:$PATH"
+          cargo test --locked -p decibell-release
+
+      - name: Build the ship binary
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: cargo build --locked --release -p decibell-app --no-default-features --features ship
+
+      - name: Bake Sentry DSN and GIF key (releases only)
+        if: env.PUBLISH == 'true'
+        shell: bash
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          GIF_API_KEY: ${{ secrets.GIF_API_KEY }}
+          GIF_API_PROVIDER: ${{ vars.GIF_API_PROVIDER || 'klipy' }}
+        run: |
+          mkdir -p target/resources
+          if [ -n "$SENTRY_DSN" ]; then echo "{\"dsn\":\"$SENTRY_DSN\"}" > target/resources/sentry.json; fi
+          if [ -n "$GIF_API_KEY" ]; then echo "{\"provider\":\"$GIF_API_PROVIDER\",\"key\":\"$GIF_API_KEY\"}" > target/resources/gifs.json; fi
+
+      - name: Package (installer)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            $nsis = "${env:ProgramFiles(x86)}\NSIS"
+            if (-not (Test-Path "$nsis\makensis.exe")) { choco install nsis --no-progress -y; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+            $env:Path = "$nsis;$env:Path"
+          }
+          $resources = if (Test-Path target\resources) { "target\resources" } else { "" }
+          packaging\windows\package.ps1 -Binary target\release\decibell.exe -Out target\packages -Resources $resources
+
+      - name: Install, check and uninstall on this runner
+        shell: pwsh
+        run: packaging\windows\test-install.ps1 -Installer (Get-ChildItem target\packages\Decibell-*-x64-setup.exe).FullName -Version "${{ needs.version.outputs.version }}"
+
+      - name: Install size (tools/perf/windows/install-size.ps1)
+        shell: pwsh
+        run: |
+          $script = "..\tools\perf\windows\install-size.ps1"
+          if (Test-Path $script) { & $script target\packages\stage } else { "install-size.ps1 is not on this commit" }
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-windows
+          path: |
+            gpui-client/target/packages/*.exe
+            gpui-client/target/packages/dlls.txt
+          if-no-files-found: error
+
+  publish:
+    needs: [version, linux, windows]
+    # Tag runs only: a push to the branch or a manual run never reaches this job.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/native-v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: The update feed
+        env:
+          SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          find artifacts -type f -exec cp {} out/ \;
+          python3 -I gpui-client/packaging/feed.py --version "$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --tag "native-v$VERSION" --dir out --out out/decibell-native.json
+          if [ -n "$SIGNING_KEY" ]; then
+            printf '%s\n' "$SIGNING_KEY" > key.pem
+            openssl pkeyutl -sign -inkey key.pem -rawin -in out/decibell-native.json | base64 -w0 > out/decibell-native.json.sig
+            rm -f key.pem
+            echo "feed signed"
+          elif [ -n "$DECIBELL_UPDATE_PUBLIC_KEY" ]; then
+            echo "::error::the binaries trust UPDATE_PUBLIC_KEY but no UPDATE_SIGNING_KEY secret signs the feed: every client would refuse it"
+            exit 1
+          fi
+          cat out/decibell-native.json
+
+      # Never the repository's latest release while the Electron client ships (its updater reads
+      # releases/latest); not a pre-release either (it is a real release of this client).
+      - name: Create the release
+        run: |
+          set -euo pipefail
+          cd out
+          gh release create "native-v$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag --latest=false \
+            --title "Decibell native $VERSION" \
+            --notes "The native (GPUI) client, version $VERSION. Linux: AppImage (updates itself), .deb, tarball (AUR: decibell-native-bin). Windows: installer. The FFmpeg / dav1d / SVT-AV1 sources it links are attached (LGPL)." \
+            ./*
+
+      # The channel the native updater reads: a fixed pre-release, never latest.
+      - name: Update the channel
+        run: |
+          set -euo pipefail
+          if ! gh release view native-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create native-latest --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "Native client update channel" \
+              --notes "Holds the native client's update feed (decibell-native.json). Not a release: the releases are the native-v* tags."
+          fi
+          gh release upload native-latest --repo "$GITHUB_REPOSITORY" --clobber out/decibell-native.json $( [ -f out/decibell-native.json.sig ] && echo out/decibell-native.json.sig )
+
+      - name: Guard Electron's updater (releases/latest must stay an Electron release)
+        run: |
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          echo "releases/latest = ${latest:-<none>}"
+          case "$latest" in
+            native-*)
+              echo "::error::GitHub now flags the native release $latest as the repository's latest: every Electron install's updater reads releases/latest and will fail (ERR_UPDATER_CHANNEL_FILE_NOT_FOUND: latest.yml) until this is repaired. Repair: gh release edit <the newest ev* tag> --latest --repo $GITHUB_REPOSITORY"
+              exit 1 ;;
+          esac
