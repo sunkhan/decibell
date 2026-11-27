@@ -1225,8 +1225,11 @@ async fn window_state_test(cx: TestCx) -> Result<()> {
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty());
     let sessions: Vec<(&str, Vec<(&str, String)>)> = if wayland {
         vec![("wayland", vec![]), ("x11", vec![("WAYLAND_DISPLAY", String::new())])]
-    } else {
+    } else if cfg!(target_os = "linux") {
         vec![("x11", vec![])]
+    } else {
+        // The platform's one window system (Win32, AppKit): the same phases.
+        vec![(std::env::consts::OS, vec![])]
     };
     for (session, extra) in sessions {
         let profile = dir.0.join(session);
@@ -1259,8 +1262,8 @@ async fn window_state_test(cx: TestCx) -> Result<()> {
             !third.maximized && third.width == first.width && third.height == first.height,
             "{session}: unmaximised to {third:?}, expected {first:?}"
         );
-        if session == "x11" {
-            // A place on no screen (a monitor that is gone) is dropped: the window opens on one.
+        if session != "wayland" {
+            // (A Wayland client cannot place its window.) A place on no screen (a monitor that is gone) is dropped: the window opens on one.
             let mut off = third;
             off.x = Some(100_000.);
             off.y = Some(100_000.);
@@ -1268,7 +1271,7 @@ async fn window_state_test(cx: TestCx) -> Result<()> {
             let placed = run("place").await?;
             let line = placed.iter().find_map(|l| l.strip_prefix("placed ")).context("no place")?;
             ensure!(line.ends_with("on screen"), "{line}");
-            cx.log(format_args!("x11: saved at 100000,100000 → opened at {line}"));
+            cx.log(format_args!("{session}: saved at 100000,100000 → opened at {line}"));
         }
     }
     Ok(())
