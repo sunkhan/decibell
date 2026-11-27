@@ -32,6 +32,7 @@ pub struct Label {
     line_height: Option<f32>,
     tracking: Option<f32>,
     wrapping: Wrapping,
+    selectable: Option<gpui::ElementId>,
 }
 
 impl Label {
@@ -46,7 +47,16 @@ impl Label {
             line_height: None,
             tracking: None,
             wrapping: Wrapping::NORMAL,
+            selectable: None,
         }
+    }
+
+    /// Text the user can select and copy (`select-text`: an address, a fingerprint, a command
+    /// line): drag, double click, triple click, Ctrl+C. `id` keeps its selection between frames;
+    /// unique among the label's siblings, as any element id.
+    pub fn selectable(mut self, id: impl Into<gpui::ElementId>) -> Self {
+        self.selectable = Some(id.into());
+        self
     }
 
     pub fn font(mut self, font: FontRole) -> Self {
@@ -111,7 +121,7 @@ impl Label {
 }
 
 impl RenderOnce for Label {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let engine = Engine::global(cx);
         let theme = cx.theme();
         let size = self.size.unwrap_or(theme.scaled.text_body);
@@ -129,7 +139,11 @@ impl RenderOnce for Label {
             Some(em) => em * size,
             None => theme.palette.t_ls_body * BODY_FONT_SIZE,
         };
-        let label = decibell_text::Label::new(self.text, style).wrapping(self.wrapping);
+        let mut label = decibell_text::Label::new(self.text, style).wrapping(self.wrapping);
+        if let Some(id) = self.selectable {
+            let selection = window.use_keyed_state(id, cx, |_, _| decibell_text::TextSelection::default());
+            label = label.selectable(selection);
+        }
         match self.color {
             Some(_) => label,
             None => label.inherit_color(),

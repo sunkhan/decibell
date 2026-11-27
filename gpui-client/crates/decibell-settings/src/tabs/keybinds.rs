@@ -914,13 +914,15 @@ impl Render for KeybindsTab {
                             .child(code(":up"))
                             .child(plain("\u{a0}on release.")),
                     )
-                    .child(div().mt_2p5().flex().flex_col().gap_1().children(HOTKEY_ACTIONS.iter().map(|(a, _, hold)| {
+                    .child(div().mt_2p5().flex().flex_col().gap_1().children(HOTKEY_ACTIONS.iter().enumerate().map(|(i, (a, _, hold))| {
                         let wire = serde_json::to_value(a).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+                        // `select-text`: the command lines are there to be copied.
                         div().rounded(theme.radius_sm).bg(theme.color_bg_lighter).px_2().py_1().child(
                             Label::new(format!("{} --hotkey={wire}{}", self.command, if *hold { ":down" } else { "" }))
                                 .font(FontRole::Meta)
                                 .size(12.)
-                                .color(theme.color_text_primary),
+                                .color(theme.color_text_primary)
+                                .selectable(("hotkey-command", i)),
                         )
                     })));
             }

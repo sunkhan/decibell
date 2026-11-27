@@ -1,12 +1,14 @@
 //! The elements that put a layout on screen: [`Label`] for UI text and [`TextBlock`] for a
 //! layout the caller already has.
 
+use std::cell::RefCell;
 use std::hash::{Hash as _, Hasher as _};
 use std::rc::Rc;
 
 use gpui::{
-    App, AvailableSpace, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId,
-    Pixels, SharedString, Size, Style, Window, px, size,
+    App, AvailableSpace, Bounds, ClipboardItem, CursorStyle, DispatchPhase, Element, ElementId, Entity,
+    GlobalElementId, HitboxBehavior, InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, SharedString, Size, Style, WeakEntity, Window, px, rgb, size,
 };
 
 use crate::cache::KeyHasher;
@@ -28,6 +30,62 @@ pub struct Label {
     style: TextStyle,
     wrapping: Wrapping,
     inherit_color: bool,
+    selection: Option<Entity<TextSelection>>,
+}
+
+/// What is selected in a selectable [`Label`] (`user-select: text`): byte offsets into its text.
+/// One label holds a selection at a time, as one document does in Chromium; a press anywhere
+/// else clears it.
+#[derive(Default)]
+pub struct TextSelection {
+    anchor: u32,
+    focus: u32,
+    dragging: bool,
+    text: SharedString,
+}
+
+impl TextSelection {
+    /// The selected byte range, when something is selected.
+    pub fn range(&self) -> Option<(u32, u32)> {
+        let (from, to) = (self.anchor.min(self.focus), self.anchor.max(self.focus));
+        (from < to && to as usize <= self.text.len()).then_some((from, to))
+    }
+
+    /// The selected text.
+    pub fn selected_text(&self) -> Option<String> {
+        let (from, to) = self.range()?;
+        self.text.get(from as usize..to as usize).map(str::to_string)
+    }
+
+    fn set(&mut self, anchor: u32, focus: u32) -> bool {
+        let changed = (self.anchor, self.focus) != (anchor, focus);
+        (self.anchor, self.focus) = (anchor, focus);
+        changed
+    }
+}
+
+thread_local! {
+    /// The label holding the window's text selection.
+    static ACTIVE: RefCell<Option<WeakEntity<TextSelection>>> = const { RefCell::new(None) };
+}
+
+/// The text selected in a label, if any (what Ctrl+C copies).
+pub fn selected_label_text(cx: &App) -> Option<String> {
+    let active = ACTIVE.with(|a| a.borrow().clone())?.upgrade()?;
+    active.read(cx).selected_text()
+}
+
+/// Ctrl+C with no text field focused: copies the label selection to the clipboard (Chromium copies
+/// a document selection the same way). `false` when nothing is selected.
+pub fn copy_label_selection(cx: &mut App) -> bool {
+    let Some(text) = selected_label_text(cx) else { return false };
+    cx.write_to_clipboard(ClipboardItem::new_string(text));
+    true
+}
+
+/// Chromium's default selection colours (the renderer has no `::selection` rule).
+fn selection_colors() -> (gpui::Hsla, gpui::Hsla) {
+    (rgb(0x0538A4).into(), rgb(0xFFFFFF).into())
 }
 
 impl Label {
@@ -37,7 +95,16 @@ impl Label {
             style,
             wrapping: Wrapping::NORMAL,
             inherit_color: false,
+            selection: None,
         }
+    }
+
+    /// Text the user can select with the pointer (drag, double click a word, triple click all)
+    /// and copy with Ctrl+C (the window's root asks [`copy_label_selection`]); the I-beam
+    /// shows over it. `selection` holds it: make it once per label (`window.use_keyed_state`).
+    pub fn selectable(mut self, selection: Entity<TextSelection>) -> Self {
+        self.selection = Some(selection);
+        self
     }
 
     /// Draw in the text colour the element inherits (GPUI's text style at the label's
@@ -180,11 +247,113 @@ impl Element for Label {
             layout = label_layout(&engine, key, &self.text, &self.style, self.wrapping, width, scale);
         }
         let color = if self.inherit_color { window.text_style().color } else { self.style.color };
-        let options = PaintOptions {
+        let mut options = PaintOptions {
             color: Some(color),
             ..PaintOptions::default()
         };
+        if let Some(selection) = self.selection.clone() {
+            let text = self.text.clone();
+            if selection.read(cx).text != text {
+                selection.update(cx, |s, _| *s = TextSelection { text, ..TextSelection::default() });
+            }
+            if let Some(range) = selection.read(cx).range() {
+                let (background, foreground) = selection_colors();
+                options.selection = Some(range);
+                options.selection_background = background;
+                options.selection_color = Some(foreground);
+            }
+            listen_for_selection(&selection, &layout, bounds, window);
+        }
         layout.paint(bounds.origin, &options, window, cx);
+    }
+}
+
+/// A selectable label's pointer: a press on it starts a selection (two presses: the word, three:
+/// all), a drag moves its end, a press anywhere else clears it.
+fn listen_for_selection(selection: &Entity<TextSelection>, layout: &Rc<Layout>, bounds: Bounds<Pixels>, window: &mut Window) {
+    let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+    window.set_cursor_style(CursorStyle::IBeam, &hitbox);
+    let at = {
+        let layout = layout.clone();
+        move |position: gpui::Point<Pixels>| layout.hit(f32::from(position.x - bounds.origin.x), f32::from(position.y - bounds.origin.y))
+    };
+    let (sel, hit, on) = (selection.clone(), at.clone(), hitbox.clone());
+    let layout_down = layout.clone();
+    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+        let inside = on.is_hovered(window);
+        if phase == DispatchPhase::Capture {
+            // Chromium clears a document selection on a press elsewhere.
+            if !inside && sel.read(cx).range().is_some() {
+                sel.update(cx, |s, cx| {
+                    s.set(0, 0);
+                    s.dragging = false;
+                    cx.notify();
+                });
+            }
+            return;
+        }
+        if !inside || event.button != MouseButton::Left {
+            return;
+        }
+        let offset = hit(event.position).pos.offset;
+        let len = sel.read(cx).text.len() as u32;
+        let (anchor, focus) = match event.click_count {
+            1 => (offset, offset),
+            2 => layout_down.word_at(offset),
+            _ => (0, len),
+        };
+        if let Some(previous) = ACTIVE.with(|a| a.replace(Some(sel.downgrade()))).and_then(|w| w.upgrade())
+            && previous != sel
+        {
+            previous.update(cx, |s, cx| {
+                if s.set(0, 0) {
+                    cx.notify();
+                }
+            });
+        }
+        sel.update(cx, |s, cx| {
+            s.dragging = event.click_count == 1;
+            if s.set(anchor, focus) {
+                cx.notify();
+            }
+        });
+    });
+    let (sel, hit) = (selection.clone(), at);
+    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+        if phase != DispatchPhase::Bubble || !sel.read(cx).dragging || event.pressed_button != Some(MouseButton::Left) {
+            return;
+        }
+        let focus = hit(event.position).pos.offset;
+        sel.update(cx, |s, cx| {
+            let anchor = s.anchor;
+            if s.set(anchor, focus) {
+                cx.notify();
+            }
+        });
+    });
+    let sel = selection.clone();
+    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+        if phase == DispatchPhase::Bubble && sel.read(cx).dragging {
+            sel.update(cx, |s, _| s.dragging = false);
+        }
+    });
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn a_selection_is_a_byte_range_of_the_text() {
+        let mut s = TextSelection { text: "10.1.2.3 · Linux".into(), ..TextSelection::default() };
+        assert_eq!(s.range(), None);
+        s.set(8, 0);
+        assert_eq!(s.range(), Some((0, 8)), "a drag backwards selects the same");
+        assert_eq!(s.selected_text().as_deref(), Some("10.1.2.3"));
+        s.set(3, 3);
+        assert_eq!(s.selected_text(), None, "a caret selects nothing");
+        s.set(0, 200);
+        assert_eq!(s.range(), None, "past the text (it changed): nothing");
     }
 }
 

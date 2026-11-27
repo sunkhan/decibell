@@ -143,7 +143,15 @@ fn device_row(d: &Device, now: i64, busy: bool, sign_out: bool, cx: &App) -> Any
         )
     };
     if !d.address.is_empty() {
-        activity = activity.child(Label::new("·").size(12.).color(muted)).child(Label::new(d.address.clone()).size(12.).color(muted));
+        // `select-text`: the address can be selected and copied.
+        activity = activity
+            .child(Label::new("·").size(12.).color(muted))
+            .child(
+                div()
+                    .relative()
+                    .children(decibell_shell::probes::probe(format!("device-address:{}", d.id)))
+                    .child(Label::new(d.address.clone()).size(12.).color(muted).selectable(("device-address", d.id as u64))),
+            );
     }
     activity = activity
         .child(Label::new("·").size(12.).color(muted))

@@ -92,6 +92,19 @@ impl Render for Root {
             // "Type anywhere to compose", in the bubble phase: after every element on the focused
             // path (the renderer's `keydown` on `window`), after the fallback's capture listener.
             .on_key_down(|event, window, cx| {
+                // Ctrl+C (Cmd+C) copies a label's selection (`select-text`) when no field took
+                // the key first: what Chromium does with a document selection.
+                let m = event.keystroke.modifiers;
+                if event.keystroke.key == "c"
+                    && (if cfg!(target_os = "macos") { m.platform } else { m.control })
+                    && !m.alt
+                    && !m.shift
+                    && !decibell_text::input::text_field_focused(window)
+                    && decibell_text::copy_label_selection(cx)
+                {
+                    cx.stop_propagation();
+                    return;
+                }
                 if decibell_composer::type_to_focus(event, window, cx) {
                     cx.stop_propagation();
                 }

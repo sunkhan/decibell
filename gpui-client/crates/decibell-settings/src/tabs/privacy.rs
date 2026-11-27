@@ -264,7 +264,13 @@ fn e2ee_section(_: &mut Window, cx: &mut App) -> AnyElement {
             )
             .child(
                 div().mt_1().child(
-                    Label::new(fingerprint).font(FontRole::Mono).size(11.).tracking(0.06).color(theme.color_text_primary),
+                    // `select-text`: the fingerprint can be selected and copied.
+                    Label::new(fingerprint)
+                        .font(FontRole::Mono)
+                        .size(11.)
+                        .tracking(0.06)
+                        .color(theme.color_text_primary)
+                        .selectable("e2ee-fingerprint"),
                 ),
             )
     });
