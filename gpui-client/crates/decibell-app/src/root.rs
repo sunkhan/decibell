@@ -34,9 +34,10 @@ impl Root {
     pub fn new(content: AnyView, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         // Unless the content focused something of its own while it was built (a test window's
-        // field), the root starts with the focus.
-        if window.focused(cx).is_none() {
-            focus.focus(window, cx);
+        // field), the root starts with the focus; and takes it if that isn't drawn by then.
+        match window.focused(cx) {
+            None => focus.focus(window, cx),
+            Some(handle) => refocus_if_undrawn(&focus, handle, window),
         }
         let subscriptions = [
             // A focused element went away (a pane, a closed dialog that had nothing to give the
@@ -45,14 +46,7 @@ impl Root {
             // it still isn't drawn after the next frame.
             cx.on_focus_lost(window, |this: &mut Root, window, cx| match window.focused(cx) {
                 None => this.focus.focus(window, cx),
-                Some(handle) => {
-                    let root = this.focus.clone();
-                    window.on_next_frame(move |window, cx| {
-                        if window.focused(cx).is_none_or(|f| f == handle && !f.contains_focused(window, cx)) {
-                            root.focus(window, cx);
-                        }
-                    });
-                }
+                Some(handle) => refocus_if_undrawn(&this.focus, handle, window),
             }),
             crate::hotkeys::release_on_blur(window, cx),
         ];
@@ -63,6 +57,24 @@ impl Root {
         self.overlay = Some(overlay);
         cx.notify();
     }
+}
+
+/// After the next frame: the root takes the focus if `handle` still has it and still isn't in the
+/// frame (it lives on, out of the tree: a closed dialog's field whose view is kept). Keys would
+/// otherwise reach no listener (with the focus on nothing drawn GPUI dispatches only to the
+/// window's root node), and a later blur would raise no focus-lost to give it back.
+/// (`FocusHandle::contains_focused` can't tell: a handle always "contains" itself.)
+fn refocus_if_undrawn(root: &FocusHandle, handle: FocusHandle, window: &mut Window) {
+    let root = root.clone();
+    // Next-frame callbacks run before that frame draws: the check waits for one more, so the
+    // frame it reads is the one drawn after the focus moved.
+    window.on_next_frame(move |window, _| {
+        window.on_next_frame(move |window, cx| {
+            if window.focused(cx).is_none_or(|f| f == handle && f != root && !root.contains(&f, window)) {
+                root.focus(window, cx);
+            }
+        });
+    });
 }
 
 impl Render for Root {

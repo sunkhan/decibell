@@ -132,6 +132,15 @@ async fn dm_composer_in(w: &TestCx) -> Result<()> {
     w.settle().await?;
     w.update(|window, cx| window.blur(cx))?;
     w.settle().await?;
+    let before = w.update(|window, cx| {
+        format!(
+            "before the key: a text field focused {}, a handle focused {}, a modal {:?}, the active composer this one {}",
+            decibell_text::input::text_field_focused(window),
+            window.focused(cx).is_some(),
+            decibell_model::Model::global(cx).overlays.read(cx).active_modal,
+            Composer::active(cx).is_some_and(|c| c == composer)
+        )
+    })?;
     w.type_text("h")?;
     w.sleep(Duration::from_millis(50)).await;
     let (value, focused) = w.update(|window, cx| {
@@ -139,6 +148,9 @@ async fn dm_composer_in(w: &TestCx) -> Result<()> {
         (input.read(cx).value().to_string(), input.read(cx).focus_handle(cx).is_focused(window))
     })?;
     w.log(format_args!("a key with nothing focused: the box holds {value:?}, focused {focused}"));
+    if !(value == "h" && focused) {
+        w.log(&before);
+    }
     ensure!(value == "h" && focused, "type-to-focus with nothing focused");
     w.update(|_, cx| composer.read(cx).input().clone().update(cx, |i, cx| i.clear(cx)))?;
     Ok(())
