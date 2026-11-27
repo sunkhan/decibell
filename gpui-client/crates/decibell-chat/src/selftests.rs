@@ -593,7 +593,9 @@ async fn follow(h: &Harness, name: &str, inputs: &[(u64, f64)], kind: ScrollKind
     h.rest().await?;
     let total: f64 = inputs.iter().map(|input| input.1).sum();
     let travelled = h.with(|list, cx| list.scroll_position(cx))? - start;
-    ensure!(travelled == total, "{name}: travelled {travelled} px, the inputs add up to {total}");
+    // A wheel event carries lines as `f32`: where a px amount is not a whole number of them in
+    // that type (Windows' 33.3 px line: 120 px is 3.6 lines) the sum is off in the seventh digit.
+    ensure!((travelled - total).abs() < 1e-3, "{name}: travelled {travelled} px, the inputs add up to {total}");
     ensure!(worst <= 0.001, "{name}: a frame was {worst} px off the model");
     ensure!(frames >= 10, "{name}: only {frames} frames were drawn");
     h.cx.log(format_args!("{name}: {frames} frames on the model's curve (worst {worst:.3} px), {travelled} px in all"));

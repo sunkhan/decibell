@@ -585,6 +585,12 @@ async fn ime(fixture: Fixture) -> Result<()> {
 async fn atoms(fixture: Fixture) -> Result<()> {
     let window = &fixture.window;
     let field = fixture.field(|inputs| &inputs.composer_empty)?;
+    // An emoji is an atom only when its picture is in the binary (`decibell-text/build.rs` packs
+    // `assets/twemoji`, which is fetched, not committed).
+    ensure!(
+        decibell_text::packed_emoji_count() > 0,
+        "this binary was built without the emoji pictures: run `node tools/fetch-assets.mjs` before building"
+    );
     fixture.click_into(&field, 20.)?;
     let family = "👨‍👩‍👧";
     window.update(|_, cx| field.update(cx, |state, cx| state.set_value(&format!("a{family}b🇹🇷"), cx)))?;

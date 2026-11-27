@@ -158,6 +158,10 @@ struct EmptyBus {
 
 impl EmptyBus {
     fn start(dir: &Path) -> Result<EmptyBus> {
+        if !cfg!(target_os = "linux") {
+            // No session bus to keep a child away from: an empty address, which nothing reads.
+            return Ok(EmptyBus { pid: 0, address: String::new() });
+        }
         let socket = dir.join("bus");
         let config = dir.join("bus.conf");
         std::fs::write(
@@ -186,7 +190,9 @@ impl EmptyBus {
 impl Drop for EmptyBus {
     fn drop(&mut self) {
         // Our own daemon, by its pid.
-        let _ = Command::new("kill").arg(self.pid.to_string()).status();
+        if self.pid != 0 {
+            let _ = Command::new("kill").arg(self.pid.to_string()).status();
+        }
     }
 }
 
@@ -487,14 +493,24 @@ async fn profile_guard(cx: TestCx) -> Result<()> {
     let home = dir.0.join("home");
     std::fs::create_dir_all(&home)?;
     let bus = EmptyBus::start(&dir.0)?;
-    let env = vec![
+    let mut env = vec![
         ("HOME", home.display().to_string()),
         ("DBUS_SESSION_BUS_ADDRESS", bus.address.clone()),
         ("DECIBELL_CENTRAL", "127.0.0.1:9".to_string()),
     ];
     let remove = ["XDG_CONFIG_HOME", "XDG_CACHE_HOME"];
-    let expected = home.join(".cache/decibell-dev/gpui-default");
-    let shipped = home.join(".config/decibell");
+    // Where the two profiles are, by platform (`decibell_model::core`): the cache and the
+    // configuration directory under the throwaway home.
+    let (expected, shipped) = if cfg!(windows) {
+        let (local, roaming) = (home.join("AppData").join("Local"), home.join("AppData").join("Roaming"));
+        env.push(("LOCALAPPDATA", local.display().to_string()));
+        env.push(("APPDATA", roaming.display().to_string()));
+        (local.join("decibell-dev").join("gpui-default"), roaming.join("decibell"))
+    } else if cfg!(target_os = "macos") {
+        (home.join("Library/Caches/decibell-dev/gpui-default"), home.join("Library/Application Support/decibell"))
+    } else {
+        (home.join(".cache/decibell-dev/gpui-default"), home.join(".config/decibell"))
+    };
 
     let mut app = Child::spawn("app", &exe()?, &["--check", "platform-profile"], &env, &remove, &dir.0)?;
     let line = app.wait_line(&cx, "platform-check: profile ", Duration::from_secs(30)).await?;
