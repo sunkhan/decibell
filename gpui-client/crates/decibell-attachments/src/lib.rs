@@ -8,6 +8,7 @@
 //! | `features/chat/attachmentCrypto.ts`, `electron/main/attachmentCrypto.ts` | [`crypto`] |
 //! | `features/chat/thumbhash.ts` (+ the `thumbhash` npm package) | [`thumbhash`] |
 //! | `uploadAttachment.ts` probe / thumbnails, `fs.ts` `guessMime` | [`thumbs`], [`kind`] |
+//! | `uploadAttachment.ts` `probeMetadata` of a video / audio file (`<video>`'s size, length, poster) | `media_probe` (feature `media-probe`) |
 //! | `uploadAttachment.ts` upload, `uploadPacing.ts`, `attachmentsStore.ts` progress | [`upload`] |
 //! | `netFetch.ts`, `attachmentFetch.ts`, `downloadPacer.ts`, `protocol.ts` | [`fetch`] |
 //! | `downloads.ts`, `features/transfers/downloads.ts` | [`manager`] |
@@ -37,6 +38,8 @@ mod http;
 pub mod kind;
 pub mod manager;
 pub mod media;
+#[cfg(feature = "media-probe")]
+pub mod media_probe;
 pub mod names;
 mod pacer;
 pub mod thumbhash;

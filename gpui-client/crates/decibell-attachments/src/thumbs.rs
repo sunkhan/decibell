@@ -6,9 +6,9 @@
 //! its thumbnails only serve the Transfers panel and the like).
 //!
 //! All of it is CPU work: call it from `spawn_blocking` (the [`crate::upload::prepare`] path
-//! does). Video and audio need a media decoder this crate doesn't carry: the app implements
-//! [`MediaProbe`] (FFmpeg) and the rest of the flow works without it (zeros, no thumbnails, as
-//! the renderer's failed probes gave).
+//! does). Video and audio go through a [`MediaProbe`] (`media_probe`, FFmpeg, behind the
+//! `media-probe` feature); without one the rest of the flow still works (zeros, no thumbnails,
+//! as the renderer's failed probes gave).
 
 use std::io::{BufRead, Cursor, Seek};
 use std::path::Path;
@@ -174,8 +174,19 @@ impl Step {
 /// step before, so a large photo is read at full size once.
 pub fn image_facts(img: DynamicImage) -> ImageFacts {
     let (w, h) = (img.width(), img.height());
+    facts_at(img, w, h)
+}
+
+/// A video's facts from its poster (`media_probe`): the poster is the picture drawn at the
+/// video's shown size `w × h`, or smaller (never past the largest thumbnail); the thumbnails
+/// and the ThumbHash get the sizes the renderer's, made from a poster of exactly `w × h`, have.
+pub fn poster_facts(poster: RgbaImage, w: u32, h: u32) -> ImageFacts {
+    facts_at(DynamicImage::ImageRgba8(poster), w, h)
+}
+
+fn facts_at(img: DynamicImage, w: u32, h: u32) -> ImageFacts {
     let mut facts = ImageFacts { width: w, height: h, ..Default::default() };
-    if w == 0 || h == 0 {
+    if w == 0 || h == 0 || img.width() == 0 || img.height() == 0 {
         return facts;
     }
     let original = if img.color().has_alpha() { Step::Rgba(img.into_rgba8()) } else { Step::Rgb(img.into_rgb8()) };
@@ -250,8 +261,8 @@ pub struct ProbedMedia {
     pub poster: Option<RgbaImage>,
 }
 
-/// Video / audio probing, implemented by the app on its media decoder (FFmpeg). Called from a
-/// blocking thread. `None` when the file can't be read.
+/// Video / audio probing: `crate::media_probe::FfmpegProbe` (feature `media-probe`) on the
+/// FFmpeg the client links. Called from a blocking thread. `None` when the file can't be read.
 pub trait MediaProbe: Send + Sync {
     fn probe(&self, source: ProbeSource<'_>, kind: crate::AttachmentKind) -> Option<ProbedMedia>;
 }
@@ -297,6 +308,26 @@ mod tests {
             assert_eq!((d.width(), d.height()), thumbnail_dims(1500, 1000, *size).unwrap());
         }
         assert!(!f.placeholder.is_empty());
+    }
+
+    #[test]
+    fn a_poster_smaller_than_the_video() {
+        // A 1918 × 1080 video's poster is kept at its 1280 px thumbnail (1280 × 721); the smaller
+        // thumbnails take their sizes from the video's own ratio (640 × 360, where 1280 × 721's
+        // would give 361), as the renderer's full-size poster gives them.
+        let (pw, ph) = thumbnail_dims(1918, 1080, 1280).unwrap();
+        assert_eq!((pw, ph), (1280, 721));
+        let f = poster_facts(RgbaImage::from_pixel(pw, ph, image::Rgba([40, 80, 120, 255])), 1918, 1080);
+        assert_eq!((f.width, f.height), (1918, 1080));
+        let dims: Vec<(u32, u32)> = f.thumbnails.iter().map(|(_, jpeg)| {
+            let d = decode_image_bytes(jpeg).unwrap();
+            (d.width(), d.height())
+        }).collect();
+        assert_eq!(dims, vec![(320, 180), (640, 360), (1280, 721)]);
+        assert!(!f.placeholder.is_empty());
+        // Nothing to draw: no thumbnails, the size kept.
+        let f = poster_facts(RgbaImage::new(0, 0), 640, 360);
+        assert_eq!((f.width, f.height, f.thumbnails.len()), (640, 360, 0));
     }
 
     #[test]

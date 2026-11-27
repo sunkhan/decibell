@@ -34,8 +34,9 @@ decibell-theme.workspace = true
 # Electron addon's) cargo would unify the features and GPUI's D-Bus calls would need a tokio context.
 decibell-core = { path = "../../../crates/decibell-core", default-features = false, features = ["zbus-async-io"] }
 # The attachment service: the composer's uploads (M2) and the downloads manager the
-# Transfers panel mirrors (M3).
-decibell-attachments = { path = "../decibell-attachments" }
+# Transfers panel mirrors (M3). `media-probe`: a video's size, length and poster and an audio
+# file's length, read when it is attached (the FFmpeg the core already links).
+decibell-attachments = { path = "../decibell-attachments", features = ["media-probe"] }
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true

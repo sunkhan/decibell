@@ -477,7 +477,9 @@ impl CoreAttachmentService {
                         Op::Keys(server, metas) => svc.register_keys(&server, &metas),
                         Op::Prepare(source, done) => {
                             tokio::spawn(async move {
-                                let r = decibell_attachments::upload::prepare(source, None).await;
+                                let probe: Arc<dyn decibell_attachments::thumbs::MediaProbe> =
+                                    Arc::new(decibell_attachments::media_probe::FfmpegProbe);
+                                let r = decibell_attachments::upload::prepare(source, Some(probe)).await;
                                 let _ = done.send(r.map_err(|e| e.to_string()));
                             });
                         }

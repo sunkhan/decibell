@@ -31,8 +31,25 @@ tokio = { version = "1", features = ["rt", "macros", "net", "time", "sync", "fs"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio-util = "0.7"
 
+[features]
+# The video / audio probe of an upload (`media_probe`: size, length, poster) on the FFmpeg the
+# client links for playback (the core and decibell-media link the same static prefix:
+# tools/build-ffmpeg.sh -> vendor/ffmpeg; vcpkg on Windows). Off for this crate's own users
+# that need no FFmpeg; the model turns it on.
+media-probe = ["dep:ffmpeg-sys-next"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ffmpeg-sys-next = { version = "8.1", default-features = false, features = ["avcodec", "avformat", "swscale", "static"], optional = true }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+ffmpeg-sys-next = { version = "8.1", default-features = false, features = ["avcodec", "avformat", "swscale"], optional = true }
+
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "crypto"] }
 tokio = { version = "1", features = ["full"] }
 sha2 = "0.10"
 serde_json = "1"
+
+[[example]]
+name = "media_probe"
+required-features = ["media-probe"]

@@ -132,7 +132,7 @@ pub async fn prepare(source: UploadSource, probe: Option<Arc<dyn MediaProbe>>) -
                     };
                     let mut m = probe.probe(source, kind)?;
                     let facts = if kind == AttachmentKind::Video {
-                        m.poster.take().map(|p| thumbs::image_facts(image::DynamicImage::ImageRgba8(p)))
+                        m.poster.take().map(|p| thumbs::poster_facts(p, m.width, m.height))
                     } else {
                         None
                     };
