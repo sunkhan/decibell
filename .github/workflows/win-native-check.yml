@@ -171,6 +171,13 @@ jobs:
         shell: bash
         run: tools/fetch-gpui.sh
 
+      # The emoji pictures and the emoji dataset are fetched, not committed (pinned and
+      # hash-checked by the script): without them the build packs no emoji, the client falls
+      # back to the system's font, and the tests of emoji atoms and of the picker's search fail.
+      - name: Fetch the assets
+        shell: bash
+        run: node tools/fetch-assets.mjs
+
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -282,9 +289,13 @@ jobs:
           cargo build --locked -p decibell-app 2>&1 | tee build.log | tail -n 60
           test -f target/debug/decibell.exe
 
+      # The self-tests that need neither a server nor a hardware codec, in the client's real
+      # window on the runner's desktop (WARP: Direct3D 11 without a GPU). One process per group.
+      # A group listed as fatal has passed here and fails the job when it fails twice in a row
+      # (one retry: the desktop is not ours alone); a group listed as allowed is named with the
+      # reason it may still fail and moves to the fatal list once a run has shown it passing.
       - name: Self-tests
         if: always() && steps.build.outcome == 'success'
-        continue-on-error: true
         shell: bash
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
@@ -297,35 +308,62 @@ jobs:
           export DECIBELL_USER_DATA_DIR="$RUNNER_TEMP/decibell-profile"
           : > selftests.log
           tail -n 20 build.log >> selftests.log
-          for group in \
-              "boot" \
-              "idle-frames" \
-              "themes,window-frame" \
-              "video-probe" \
-              "kit-idle,kit-switch,kit-select,kit-modal,kit-confirm,kit-scroll,kit-toast" \
-              "input-typing,input-undo,input-ime,input-atoms,input-bytes-cap,input-select-filter,input-caret-idle" \
-              "chat-history,chat-switch,chat-resize,chat-selection,chat-rows,chat-idle,chat-hover" \
-              "chat-scroll-spec" \
-              "input-clipboard,input-password" \
-              "hotkeys-focused,hotkeys-layout" \
-              "join-status-picker,join-dm-composer" \
-              "picture-editor,settings-narrow,server-settings-idle" \
-              "content-scroll-fixture,content-rows" \
-              "profile-guard,single-instance,deep-link-arg,hotkey-cli,attention,taskbar-progress,keyring-label,window-state" \
-              "render-cost,encoder-software"; do
-            echo "=== decibell --selftest $group" | tee -a selftests.log
-            timeout 600 target/debug/decibell.exe --selftest "$group" >> selftests.log 2>&1
-            echo "=== exit $? ($group)" | tee -a selftests.log
+          # The same executable with the development markers the multi-process tests read
+          # (single instance, deep links, the hotkey command line). If this build fails the
+          # plain executable from the step above is still there and the tests that need the
+          # markers say so.
+          echo "=== cargo build --features dev-local" | tee -a selftests.log
+          cargo build --locked -p decibell-app --features dev-local 2>&1 | tail -n 15 | tee -a selftests.log
+
+          fatal=(
+            "boot"
+            "idle-frames"
+            "themes,window-frame"
+            "video-probe"
+            "kit-idle,kit-switch,kit-select,kit-modal,kit-confirm,kit-scroll,kit-toast"
+            "chat-history,chat-switch,chat-resize,chat-selection,chat-rows,chat-idle,chat-hover"
+            "input-clipboard,input-password"
+            "hotkeys-focused,hotkeys-layout"
+            "content-scroll-fixture,content-rows"
+            "render-cost,encoder-software"
+          )
+          # group | why it may still fail
+          allowed=(
+            "input-typing,input-undo,input-ime,input-atoms,input-bytes-cap,input-select-filter,input-caret-idle|input-atoms needs the emoji pictures, first fetched for this job in the run after 45998066577"
+            "chat-scroll-spec|its comparison was exact where a wheel line is an f32; corrected, not yet run"
+            "join-status-picker,join-dm-composer|the status picker's search needs the emoji data, first fetched in the run after 45998066577"
+            "picture-editor,settings-narrow,server-settings-idle|server-settings-idle drew one frame in its first window on the runner; it now measures again, not yet run"
+            "profile-guard,single-instance,deep-link-arg,hotkey-cli,attention,taskbar-progress,keyring-label,window-state|first run with a development-marked executable: until now these skipped on Windows"
+          )
+          run_group() {
+            echo "=== decibell --selftest $1" | tee -a selftests.log
+            timeout 600 target/debug/decibell.exe --selftest "$1" >> selftests.log 2>&1
+            local status=$?
+            echo "=== exit $status ($1)" | tee -a selftests.log
+            return $status
+          }
+          failed=()
+          for group in "${fatal[@]}"; do
+            if ! run_group "$group"; then
+              echo "=== again: $group" | tee -a selftests.log
+              run_group "$group" || failed+=("$group")
+            fi
           done
-          # The same first frame without DirectComposition, in case the runner's session has
-          # no compositor to give the window.
+          for entry in "${allowed[@]}"; do
+            group="${entry%%|*}"
+            run_group "$group" || echo "=== allowed to fail ($group): ${entry#*|}" | tee -a selftests.log
+          done
+          # The same first frame without DirectComposition.
           echo "=== decibell --selftest boot (GPUI_DISABLE_DIRECT_COMPOSITION=1)" | tee -a selftests.log
           GPUI_DISABLE_DIRECT_COMPOSITION=1 timeout 600 target/debug/decibell.exe --selftest boot >> selftests.log 2>&1
           echo "=== exit $? (boot, no DirectComposition)" | tee -a selftests.log
           echo "=== summary" >> selftests.log
-          grep -a -E '^selftest [a-z0-9-]+: (PASS|FAIL|SKIP)|^=== exit' selftests.log > selftests.summary
+          grep -a -E '^selftest [a-z0-9-]+: (PASS|FAIL|SKIP)|^    SKIP|^=== (exit|again|allowed)' selftests.log > selftests.summary
           cat selftests.summary | tee -a selftests.log
-          exit 0
+          if [ ${#failed[@]} -gt 0 ]; then
+            printf '=== FATAL: failed twice: %s\n' "${failed[@]}" | tee -a selftests.log
+            exit 1
+          fi
 
       # The window at rest, measured by the script the owner uses on a real machine
       # (tools/perf/windows/row.ps1, under Windows PowerShell 5.1 as there): the numbers of a
