@@ -179,7 +179,16 @@ impl Fixture {
         // The pointer leaves again: the shell's hover transition is not what is measured.
         self.window.mouse_move(point(px(4.), px(4.)))?;
         let focused = self.window.update(|window, cx| field.focus_handle(cx).is_focused(window))?;
-        ensure!(focused, "a click did not focus the field");
+        if !focused {
+            // Seen only on the Windows runner (input-atoms, 2026-11-27): say where the click went.
+            let at = self.at(field, x)?;
+            let bounds = self.read(field, |state| state.bounds())?;
+            let (viewport, active, scale) =
+                self.window.update(|window, _| (window.viewport_size(), window.is_window_active(), window.scale_factor()))?;
+            anyhow::bail!(
+                "a click did not focus the field (click at {at:?}, field bounds {bounds:?}, window {viewport:?} at scale {scale}, active {active})"
+            );
+        }
         Ok(())
     }
 
@@ -248,7 +257,14 @@ async fn typing(fixture: Fixture) -> Result<()> {
     ensure!(fixture.caret(&field)? == 5, "Ctrl+Right from 0 lands after \"Hello\"");
     // Punctuation is a stop of its own (Chromium): after the comma, then after "wörld".
     fixture.keys(&["ctrl-right"])?;
-    ensure!(fixture.caret(&field)? == 6, "Ctrl+Right stops after the comma");
+    // Windows goes on past the space, to the start of the next word (Chromium's
+    // `ShouldSkipSpaceWhenMovingRight`; `tests/input_vectors.rs` has the rule and its source).
+    let after_comma = if cfg!(target_os = "windows") { 7 } else { 6 };
+    ensure!(
+        fixture.caret(&field)? == after_comma,
+        "Ctrl+Right stops after the comma (caret {}, expected {after_comma})",
+        fixture.caret(&field)?
+    );
     fixture.keys(&["ctrl-right", "ctrl-left"])?;
     ensure!(fixture.caret(&field)? == 7, "Ctrl+Left lands before \"wörld\"");
     fixture.keys(&["end", "left"])?;
@@ -497,6 +513,11 @@ async fn ime(fixture: Fixture) -> Result<()> {
     let field = fixture.field(|inputs| &inputs.name)?; // "Daily Gaming"
     fixture.click_into(&field, 20.)?;
     fixture.keys(&["ctrl-left", "ctrl-left", "ctrl-right"])?; // after "Daily"
+    if cfg!(target_os = "windows") {
+        // A word move forward ends before "Gaming" there (past the space): one step back.
+        fixture.keys(&["left"])?;
+    }
+    ensure!(fixture.caret(&field)? == 5, "the caret is at {}, not after \"Daily\"", fixture.caret(&field)?);
     window.settle().await?;
     let ime = |act: &mut dyn FnMut(&mut InputState, &mut Window, &mut Context<InputState>)| {
         window.update(|window, cx| field.update(cx, |state, cx| act(state, window, cx)))
