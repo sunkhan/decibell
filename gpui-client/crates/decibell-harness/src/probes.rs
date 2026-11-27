@@ -3,7 +3,8 @@
 //! unless the process was started with `DECIBELL_TEST_PROBES=1` (the self-tests that run the app
 //! as a child set it): then each
 //! probed element carries an invisible canvas that records its bounds when laid out, and a few
-//! views record a flag when they render. Off, nothing is added to any element.
+//! views record a flag when they render. Off, nothing is added to any element; in the shipped
+//! build (feature `ship`) they are always off and compiled out.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -12,6 +13,10 @@ use std::sync::OnceLock;
 use gpui::{Bounds, IntoElement, Pixels, SharedString, Styled as _, canvas};
 
 pub fn enabled() -> bool {
+    // The shipped build has no self-tests: every probe is compiled out with it.
+    if cfg!(feature = "ship") {
+        return false;
+    }
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("DECIBELL_TEST_PROBES").is_some_and(|v| v == "1"))
 }

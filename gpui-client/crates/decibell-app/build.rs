@@ -51,14 +51,45 @@ const MEDIA_DEMUXERS: [(&str, &str); 7] = [
     ("ff_flac_demuxer", "the FLAC demuxer"),
     ("ff_aac_demuxer", "the ADTS AAC demuxer"),
 ];
+#[path = "build/winres.rs"]
+mod winres;
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("linux") => linux(),
-        Ok("windows") => windows(),
+        Ok("windows") => {
+            windows();
+            windows_resources();
+        }
         _ => {}
     }
+}
+
+// ── Windows: the executable's icon, version and manifest ────────────────────────────────────
+
+/// `decibell.exe`'s resources (build/winres.rs): written as a `.res` and handed to the linker for
+/// the `decibell` binary only.
+fn windows_resources() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let icon = manifest_dir.join("../../../electron-client/resources/icon.ico");
+    let manifest = manifest_dir.join("windows/decibell.manifest.xml");
+    println!("cargo::rerun-if-changed={}", icon.display());
+    println!("cargo::rerun-if-changed={}", manifest.display());
+    println!("cargo::rerun-if-changed=build/winres.rs");
+    println!("cargo::rerun-if-env-changed=DEP_DECIBELL_RELEASE_VERSION");
+    let text = std::env::var("DEP_DECIBELL_RELEASE_VERSION").unwrap_or_else(|_| fail("decibell-release did not say the version".into()));
+    let mut numbers = [0u16; 4];
+    for (slot, part) in numbers.iter_mut().zip(text.split(['-', '+']).next().unwrap_or("").split('.')) {
+        *slot = part.parse().unwrap_or(0);
+    }
+    let ico = std::fs::read(&icon).unwrap_or_else(|e| fail(format!("{}: {e}", icon.display())));
+    let manifest = std::fs::read(&manifest).unwrap_or_else(|e| fail(format!("{}: {e}", manifest.display())));
+    let res = winres::resource_file(&ico, &manifest, &winres::Version { text: &text, numbers })
+        .unwrap_or_else(|e| fail(format!("the Windows resources: {e}")));
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR")).join("decibell.res");
+    std::fs::write(&out, res).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
+    println!("cargo::rustc-link-arg-bin=decibell={}", out.display());
 }
 
 fn fail(message: String) -> ! {
@@ -68,6 +99,10 @@ fn fail(message: String) -> ! {
 // ── Linux: the static prefix ────────────────────────────────────────────────
 
 fn linux() {
+    // Relative relocations packed (DT_RELR, glibc 2.36+; the binary needs 2.39 anyway): the PIE's
+    // ~100,000 relative relocations shrink from 2.6 MB of `.rela.dyn` to a few KB, which is less
+    // to read and apply at every start.
+    println!("cargo::rustc-link-arg-bins=-Wl,-z,pack-relative-relocs");
     println!("cargo::rerun-if-env-changed=PKG_CONFIG_PATH");
     let library = match pkg_config::Config::new()
         .statik(true)

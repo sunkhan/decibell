@@ -1,14 +1,20 @@
 //! Every screen and self-test of the workspace. A crate that has some exposes
 //! `pub fn screens() -> Vec<Screen>` / `pub fn selftests() -> Vec<SelfTest>` and is added to the
-//! lists here; that is the whole mechanism.
+//! lists here; that is the whole mechanism. Development builds only (feature `dev`): the shipped
+//! build has no screen, self-test or check, and none of their code or fixtures is linked into it.
+//! What every build needs from here is [`init_features`] / [`join_features`].
 
+#[cfg(feature = "dev")]
 use anyhow::{Result, anyhow};
+#[cfg(feature = "dev")]
 use decibell_harness::{Screen, SelfTest};
 
+#[cfg(feature = "dev")]
 /// What the self-tests' window shows without `--screen` (the app itself, without `--selftest`,
 /// shows the shell: `decibell_shell::Shell`).
 pub const DEFAULT_SCREEN: &str = "gallery";
 
+#[cfg(feature = "dev")]
 pub fn screens() -> Vec<Screen> {
     let mut screens = Vec::new();
     screens.extend(decibell_ui::screens());
@@ -29,6 +35,7 @@ pub fn screens() -> Vec<Screen> {
     screens
 }
 
+#[cfg(feature = "dev")]
 pub fn selftests() -> Vec<SelfTest> {
     let mut tests = Vec::new();
     tests.extend(crate::selftests::selftests());
@@ -58,7 +65,7 @@ pub fn init_features(cx: &mut gpui::App) {
     decibell_chat::init(cx);
     decibell_voice::init(cx);
     decibell_settings::init(cx);
-    decibell_settings::SettingsHooks::set_app_version(env!("CARGO_PKG_VERSION"), cx);
+    decibell_settings::SettingsHooks::set_app_version(crate::VERSION, cx);
     // After the chat crate: the composer and editor slots of its pane and list.
     decibell_composer::init(cx);
     decibell_home::init(cx);
@@ -128,6 +135,7 @@ fn join_user_menu(cx: &mut gpui::App) {
     );
 }
 
+#[cfg(feature = "dev")]
 /// The checks `--check <name>` runs inside the signed-in app (the shell's self-tests start the
 /// app that way in a child process, with its own profile).
 pub fn checks() -> Vec<SelfTest> {
@@ -146,6 +154,7 @@ pub fn checks() -> Vec<SelfTest> {
     checks
 }
 
+#[cfg(feature = "dev")]
 pub fn screen(name: &str) -> Result<Screen> {
     let mut screens = screens();
     match screens.iter().position(|screen| screen.name == name) {
@@ -154,6 +163,7 @@ pub fn screen(name: &str) -> Result<Screen> {
     }
 }
 
+#[cfg(feature = "dev")]
 /// The `list` output of `--screen` / `--selftest`.
 pub fn listing<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
     entries
@@ -162,7 +172,7 @@ pub fn listing<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Str
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "dev"))]
 mod tests {
     use super::*;
 

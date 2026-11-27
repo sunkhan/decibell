@@ -41,6 +41,7 @@ pub use dm_rows::{DmRows, UnreadDmTiles};
 pub use glow::{BREATHE_FPS, BREATHE_PERIOD};
 pub use main_view::MainView;
 pub use members::{MEMBERS_WIDTH, MembersList, member_row_height};
+pub use user_panel::RestartToUpdate;
 pub use overlays::{CertMismatchOverlay, ToastMirror};
 pub use requests::{CreateChannelRequest, ShellRequests};
 pub use server_bar::{BAR_HEIGHT, ServerBar, TILE_HEIGHT, TILE_WIDTH};

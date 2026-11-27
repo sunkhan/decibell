@@ -6,7 +6,7 @@
 //! The voice feature draws what the voice controls open, through [`crate::PanelAction`]
 //! (`register_user_panel_action`): the connection-stats popover (the latency button), the Go Live
 //! dialog (Stream), the stream-audio popover, the device menu on a right click of mute / deafen.
-//! Left to the updater: the update chip's restart.
+//! The update chip dispatches [`RestartToUpdate`]; the app's updater answers it.
 
 use crate::ink::Ink;
 use crate::slots::{PanelAction, user_panel_action};
@@ -22,6 +22,14 @@ use gpui::{
     App, ClickEvent, Context, Entity, IntoElement, MouseButton, Pixels, Point, Render, SharedString, Window,
     canvas, deferred, div, point, prelude::*, px,
 };
+
+gpui::actions!(
+    decibell_shell,
+    [
+        /// The user panel's update chip: restart to apply the downloaded update (`quitAndInstall`).
+        RestartToUpdate
+    ]
+);
 
 /// The panel's height as last laid out, for the sidebars' `.sidebar-above-panel` padding (the
 /// renderer's `--user-panel-h`, published by a ResizeObserver). 56 px until measured.
@@ -187,9 +195,16 @@ impl Render for UserPanel {
         let message = own.message.clone();
         let speaking = voice.speaking.read(cx).is_speaking(me);
 
-        // The update chip ("Update ready — <version>  RESTART"): restarting is the updater's.
+        // The update chip ("Update ready — <version>  RESTART"): restarting is the updater's
+        // (`RestartToUpdate`, answered by the app). No pulse on its dot: a glow that animates for
+        // days would draw frames at rest.
         let chip = chip.map(|version| {
             div()
+                .id("update-chip")
+                .cursor_pointer()
+                .hover(|s| s.bg(t.color_accent_mid))
+                .tooltip(title_tooltip(format!("Restart to update to {version}")))
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(RestartToUpdate), cx))
                 .mb_2()
                 .flex()
                 .w_full()

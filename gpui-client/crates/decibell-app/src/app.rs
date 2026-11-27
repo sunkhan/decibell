@@ -93,7 +93,7 @@ pub fn start_core(model: &Model, cues: crate::audio::CueOutput, cx: &mut App) {
         cx,
         CoreOptions {
             user_data_dir,
-            app_version: env!("CARGO_PKG_VERSION").into(),
+            app_version: crate::VERSION.into(),
             local_key: local_key_provider(),
         },
     )

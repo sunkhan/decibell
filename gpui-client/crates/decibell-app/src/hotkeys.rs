@@ -12,24 +12,15 @@
 //! key that types a character (no Ctrl, Alt or Super held) is the field's, not a keybind's, so
 //! typing "v" in a message doesn't press a bare-V push-to-talk (`docs/electron-quirks.md` #13).
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::time::Duration;
-
-use anyhow::{Context as _, Result, ensure};
-use decibell_core::config::{AppSettings, HotkeyBindingSetting};
-use decibell_core::hotkeys::Action;
-use decibell_harness::{SelfTest, TestCx};
 use decibell_model::Model;
-use decibell_model::live::hotkeys::{HotkeyBackend, Hotkeys, mouse_key};
-use decibell_text::input::{InputState, text_field_focused};
-use decibell_ui::{ActiveTheme as _, TextField};
-use gpui::{
-    App, AppContext as _, Context, Entity, InteractiveElement, IntoElement, KeyCode, Keystroke, Modifiers, Render,
-    Subscription, Window, div, prelude::*, px,
-};
+use decibell_model::live::hotkeys::{Hotkeys, mouse_key};
+use decibell_text::input::text_field_focused;
+use gpui::{App, Context, Entity, InteractiveElement, Keystroke, Subscription, Window};
 
 use crate::root::Root;
+
+#[cfg(feature = "dev")]
+pub use selftest::selftest;
 
 /// The model's hotkeys store while the fallback is armed.
 fn armed(cx: &App) -> Option<Entity<Hotkeys>> {
@@ -89,6 +80,24 @@ pub fn release_on_blur(window: &mut Window, cx: &mut Context<Root>) -> Subscript
 }
 
 // ── The self-test ────────────────────────────────────────────────────────────────────────────
+
+/// Development builds only (feature `dev`).
+#[cfg(feature = "dev")]
+mod selftest {
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
+use anyhow::{Context as _, Result, ensure};
+use decibell_core::config::{AppSettings, HotkeyBindingSetting};
+use decibell_core::hotkeys::Action;
+use decibell_harness::{SelfTest, TestCx};
+use decibell_model::Model;
+use decibell_model::live::hotkeys::HotkeyBackend;
+use decibell_text::input::InputState;
+use decibell_ui::{ActiveTheme as _, TextField};
+use gpui::{App, AppContext as _, Context, Entity, IntoElement, KeyCode, Keystroke, Modifiers, Render, Window, div, prelude::*, px};
+
 
 pub fn selftest() -> SelfTest {
     SelfTest {
@@ -274,4 +283,5 @@ async fn focused(cx: TestCx) -> Result<()> {
         })
     });
     result.and(restore)
+}
 }

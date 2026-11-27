@@ -4,13 +4,17 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use decibell_harness::{TestCx, perf, run_selftests};
+use decibell_harness::perf;
+#[cfg(feature = "dev")]
+use decibell_harness::{TestCx, run_selftests};
 use decibell_theme::ThemeId;
 use decibell_ui::{ActiveTheme as _, Assets, Theme};
 use gpui::{App, AppContext as _, KeyBinding, actions};
 
-use crate::args::{Args, USAGE};
-use crate::{registry, window};
+use crate::args::{Args, usage};
+use crate::window;
+#[cfg(feature = "dev")]
+use crate::registry;
 
 actions!(decibell, [NextTheme, PreviousTheme]);
 
@@ -19,16 +23,22 @@ enum Mode {
     /// The app: the model, the core, the sign-in page or the main layout.
     App,
     /// A registered screen (fixture state, no core): `--screen <name>`, and the self-tests'
-    /// window (the default screen).
+    /// window (the default screen). Development builds only.
+    #[cfg(feature = "dev")]
     Screen(String),
 }
 
 /// Runs the app until its last window closes (or its self-tests finish).
 pub fn run(args: Args) -> ExitCode {
     if args.help {
-        println!("{USAGE}");
+        println!("{}", usage());
         return ExitCode::SUCCESS;
     }
+    if args.version {
+        println!("decibell {}", crate::VERSION);
+        return ExitCode::SUCCESS;
+    }
+    #[cfg(feature = "dev")]
     if args.screen.as_deref() == Some("list") {
         let screens = registry::screens();
         print!(
@@ -37,6 +47,7 @@ pub fn run(args: Args) -> ExitCode {
         );
         return ExitCode::SUCCESS;
     }
+    #[cfg(feature = "dev")]
     if args.selftest.as_deref() == Some("list") {
         let tests = registry::selftests();
         print!(
@@ -46,9 +57,16 @@ pub fn run(args: Args) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     crate::logging::init();
+    // The installer's Start menu shortcut (Windows), written by this binary for its AppUserModelID.
+    if let Some(link) = &args.create_shortcut {
+        return crate::updater::create_shortcut(link);
+    }
     if args.perf {
         perf::enable_report();
     }
+    // The taskbar's identity (Windows): the same id as the Start menu shortcut's, before any window.
+    #[cfg(windows)]
+    decibell_release::win::set_app_user_model_id(decibell_release::APP_USER_MODEL_ID);
     // The app itself (not a screen, a self-test's window or the benchmark): its profile, and one
     // instance per profile (a second start hands its links / hotkey to the first and exits before
     // any window or GPUI starts).
@@ -64,6 +82,20 @@ pub fn run(args: Args) -> ExitCode {
     } else {
         None
     };
+    // A downloaded update is applied by this (old) version before anything starts: the new one
+    // runs on trial, and on failure this one carries on (decibell_release::apply).
+    let app = match app {
+        Some(app) => match apply_staged_update(app, &args) {
+            Ok(app) => Some(app),
+            Err(code) => return code,
+        },
+        None => None,
+    };
+    if let Some(app) = &app {
+        decibell_release::apply::clean_up_after_update();
+        // Crash reports (packaged ship builds with a DSN and the Privacy toggle on).
+        crate::crash::start(&app.profile);
+    }
     // `--login` exists in development builds only, and only for the local test stack.
     let login = match &args.login {
         None => None,
@@ -101,13 +133,40 @@ pub fn run(args: Args) -> ExitCode {
     // Then the core and its runtime, bounded (a call's goodbye, the connections' close).
     decibell_model::core::shutdown(Duration::from_secs(3));
     perf::report_frames();
+    // Settings → About's Restart: this version starts again to apply the update (and exits now,
+    // giving up the profile).
+    crate::updater::relaunch_if_requested();
     ExitCode::from(exit_code.load(Ordering::Relaxed))
+}
+
+/// Applies a staged update at start (self-update installs only). `Err`: this process is done
+/// (the new version runs, or the profile was handed over).
+fn apply_staged_update(app: AppStart, args: &Args) -> Result<AppStart, ExitCode> {
+    if args.update_trial.is_some() {
+        return Ok(app);
+    }
+    let Some(staged) = crate::updater::staged_to_apply(&app.profile) else { return Ok(app) };
+    let dir = crate::updater::update_dir(&app.profile);
+    // The profile's lock and endpoint go with it: the new version must become the instance.
+    drop(app);
+    let outcome = decibell_release::apply::apply(&dir, &staged, &crate::updater::trial_args());
+    if outcome == decibell_release::apply::Outcome::Started {
+        return Err(ExitCode::SUCCESS);
+    }
+    match claim_profile(args) {
+        Ok(Some(app)) => Ok(app),
+        Ok(None) => Err(ExitCode::SUCCESS),
+        Err(message) => {
+            eprintln!("decibell: {message:#}");
+            Err(ExitCode::from(2))
+        }
+    }
 }
 
 /// What the app (as opposed to a screen) runs with: its profile, what its command line asked for,
 /// and the profile's instance lock when it holds it.
-struct AppStart {
-    profile: std::path::PathBuf,
+pub(crate) struct AppStart {
+    pub(crate) profile: std::path::PathBuf,
     launch: decibell_platform::Launch,
     instance: Option<decibell_platform::Instance>,
 }
@@ -122,6 +181,11 @@ fn is_app(args: &Args) -> bool {
 fn claim_profile(args: &Args) -> Result<Option<AppStart>> {
     let profile = decibell_model::core::default_user_data_dir()?;
     decibell_model::core::check_profile(&profile)?;
+    if args.apply_update {
+        // Restart started us while the old window was closing: wait for it to let go of the
+        // profile, then become its instance (not hand over to it).
+        crate::updater::wait_for_profile(&profile);
+    }
     let launch = decibell_platform::Launch::new(&args.links, args.hotkey.as_deref());
     let instance = match decibell_platform::instance::start(&profile, &launch) {
         Ok(decibell_platform::Start::First(instance)) => Some(instance),
@@ -178,6 +242,7 @@ fn start(
 
     // `--check` runs one of the shell's checks in the signed-in app; `--selftest` runs in the
     // default screen's window (the shell's own tests start the app in child processes).
+    #[cfg(feature = "dev")]
     let mode = match (&args.screen, &args.selftest) {
         (Some(name), _) => Mode::Screen(name.clone()),
         // The scroll benchmark opens its own window, as a self-test does.
@@ -185,6 +250,8 @@ fn start(
         (None, Some(_)) => Mode::Screen(registry::DEFAULT_SCREEN.into()),
         (None, None) => Mode::App,
     };
+    #[cfg(not(feature = "dev"))]
+    let mode = Mode::App;
     let window = match (mode, app) {
         (Mode::App, app) => {
             let app = app.context("the app's profile was not claimed")?;
@@ -192,6 +259,8 @@ fn start(
             // `--check`: a self-test's signed-in child; its sounds never reach the real output.
             let cues = crate::audio::CueOutput::from_env(args.check.is_some());
             crate::app::start_core(&model, cues, cx);
+            // The names a crash report must never carry (the account, the communities).
+            crate::crash::watch_names(&model, cx);
             #[cfg(feature = "dev-local")]
             {
                 crate::dev::print_markers(cx);
@@ -204,6 +273,9 @@ fn start(
             let window = window::open_main(|_, cx| cx.new(decibell_shell::Shell::new).into(), Some(&app.profile), cx)?;
             // The decode capabilities are probed once the first frame is up (crate::video).
             window.update(cx, |_, window, _| crate::video::probe_after_first_frame(window))?;
+            // The updater: Settings → About's state and buttons, the first check after the first
+            // frame; a version started on trial says it started.
+            crate::updater::install(&model, &app.profile, args.update_trial.clone(), window.into(), cx);
             // The desktop around it: the first start's links, later starts' requests, attention,
             // taskbar progress, the quit guard, the window's state, sleep / lock.
             let overlay = decibell_platform::install(window.into(), app.launch, app.instance, Some(app.profile), cx);
@@ -212,6 +284,7 @@ fn start(
             crate::dev::serve_control(window.into(), cx);
             window
         }
+        #[cfg(feature = "dev")]
         (Mode::Screen(name), _) => {
             // Screens draw from fixtures: the model without a core (they fill it themselves).
             crate::app::init_model(args.theme, None, cx);
@@ -220,36 +293,41 @@ fn start(
         }
     };
 
-    let tests = match (&args.selftest, &args.check) {
-        (_, Some(check)) => Some((registry::checks(), check.clone())),
-        (Some(selection), None) => Some((registry::selftests(), selection.clone())),
-        (None, None) => None,
-    };
-    if let Some(seconds) = args.bench_scroll {
-        let speeds = args.bench_speed.map_or(vec![1000., 3000.], |speed| vec![speed]);
-        cx.spawn(async move |cx| {
-            match decibell_chat::bench::run(cx.clone(), seconds, &speeds, None).await {
-                Ok(report) => println!("{report:#}"),
-                Err(error) => {
-                    eprintln!("decibell: {error:#}");
+    #[cfg(feature = "dev")]
+    {
+        let tests = match (&args.selftest, &args.check) {
+            (_, Some(check)) => Some((registry::checks(), check.clone())),
+            (Some(selection), None) => Some((registry::selftests(), selection.clone())),
+            (None, None) => None,
+        };
+        if let Some(seconds) = args.bench_scroll {
+            let speeds = args.bench_speed.map_or(vec![1000., 3000.], |speed| vec![speed]);
+            cx.spawn(async move |cx| {
+                match decibell_chat::bench::run(cx.clone(), seconds, &speeds, None).await {
+                    Ok(report) => println!("{report:#}"),
+                    Err(error) => {
+                        eprintln!("decibell: {error:#}");
+                        exit_code.store(1, Ordering::Relaxed);
+                    }
+                }
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+            return Ok(());
+        }
+        if let Some((tests, selection)) = tests {
+            cx.spawn(async move |cx| {
+                let test_cx = TestCx::new(cx.clone(), window.into());
+                if !run_selftests(tests, &selection, test_cx).await {
                     exit_code.store(1, Ordering::Relaxed);
                 }
-            }
-            cx.update(|cx| cx.quit());
-        })
-        .detach();
-        return Ok(());
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        }
     }
-    if let Some((tests, selection)) = tests {
-        cx.spawn(async move |cx| {
-            let test_cx = TestCx::new(cx.clone(), window.into());
-            if !run_selftests(tests, &selection, test_cx).await {
-                exit_code.store(1, Ordering::Relaxed);
-            }
-            cx.update(|cx| cx.quit());
-        })
-        .detach();
-    }
+    #[cfg(not(feature = "dev"))]
+    let _ = (window, exit_code);
     Ok(())
 }
 

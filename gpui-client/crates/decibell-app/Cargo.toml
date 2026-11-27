@@ -21,11 +21,33 @@ path = "src/bin/capture.rs"
 required-features = ["capture"]
 
 [features]
-capture = ["gpui/test-support", "gpui_platform/test-support", "dep:gpui_wgpu"]
+# Two flavours (gpui-client/PACKAGING.md, "Build flavours"):
+# - development, the default: every screen, self-test and fixture, the scroll benchmark and the
+#   release crate's test hooks; `dev-local` and `capture` add to it;
+# - ship: `cargo build --release -p decibell-app --no-default-features --features ship`, none of
+#   that; the updater and crash reports run (in a package). `src/lib.rs` refuses a mix.
+default = ["dev"]
+dev = [
+    "dep:decibell-text-gallery",
+    "decibell-shell/fixtures",
+    "decibell-chat/fixtures",
+    "decibell-voice/fixtures",
+    "decibell-settings/fixtures",
+    "decibell-composer/fixtures",
+    "decibell-home/fixtures",
+    "decibell-chat-content/fixtures",
+    "decibell-server-settings/fixtures",
+    "decibell-picture-editor/fixtures",
+    "decibell-search/fixtures",
+    "decibell-servers/fixtures",
+    "decibell-release/test-hooks",
+]
+ship = ["decibell-release/ship", "decibell-harness/ship"]
+capture = ["dev", "gpui/test-support", "gpui_platform/test-support", "dep:gpui_wgpu"]
 # Development, tests, captures and measurements only — never the shipped binary: honours
 # DECIBELL_CENTRAL (the local test stack) and enables `--login`, the stdout markers and the
 # perf control pipe (src/dev.rs).
-dev-local = ["decibell-model/local-central", "dep:serde_json", "decibell-settings/dev-local", "decibell-chat-content/loopback", "decibell-servers/dev-local", "decibell-platform/dev-local"]
+dev-local = ["dev", "decibell-model/local-central", "dep:serde_json", "decibell-settings/dev-local", "decibell-chat-content/loopback", "decibell-servers/dev-local", "decibell-platform/dev-local"]
 
 [dependencies]
 gpui.workspace = true
@@ -35,27 +57,30 @@ decibell-harness.workspace = true
 decibell-ui.workspace = true
 # The focused hotkey fallback asks whether a text field has the focus.
 decibell-text.workspace = true
-decibell-text-gallery = { path = "../decibell-text/gallery" }
+decibell-text-gallery = { path = "../decibell-text/gallery", optional = true }
 # `core`: the core's frames into the hub (`push_frame`, the frame pool).
 decibell-video = { workspace = true, features = ["core"] }
 decibell-model.workspace = true
-decibell-shell = { workspace = true, features = ["fixtures"] }
-decibell-chat = { workspace = true, features = ["fixtures"] }
-decibell-voice = { workspace = true, features = ["fixtures"] }
-decibell-settings = { workspace = true, features = ["fixtures"] }
-decibell-composer = { workspace = true, features = ["fixtures"] }
-decibell-home = { workspace = true, features = ["fixtures"] }
-decibell-chat-content = { workspace = true, features = ["fixtures"] }
-decibell-server-settings = { workspace = true, features = ["fixtures"] }
-decibell-picture-editor = { workspace = true, features = ["fixtures"] }
-decibell-search = { workspace = true, features = ["fixtures"] }
-decibell-servers = { workspace = true, features = ["fixtures"] }
+decibell-shell.workspace = true
+decibell-chat.workspace = true
+decibell-voice.workspace = true
+decibell-settings.workspace = true
+decibell-composer.workspace = true
+decibell-home.workspace = true
+decibell-chat-content.workspace = true
+decibell-server-settings.workspace = true
+decibell-picture-editor.workspace = true
+decibell-search.workspace = true
+decibell-servers.workspace = true
 decibell-platform.workspace = true
+# The version, the updater, crash reports, the install facts.
+decibell-release.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true
-# PNG for the captures; the `content-copy-image` self-test decodes what other processes read from
-# the clipboard (the same `image` the content crate links: no new code in the binary).
+# The X11 window icon (decoded from the bundled PNG); PNG for the captures; the
+# `content-copy-image` self-test decodes what other processes read from the clipboard (the same
+# `image` the content crate links: no new code in the binary).
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json = { version = "1", optional = true }
 # The video glue's core calls (keyframe requests, the frame-sink flag, the decode caps), and the

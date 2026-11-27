@@ -52,10 +52,29 @@ fn main_window_options(profile: Option<&std::path::Path>, cx: &App) -> WindowOpt
         // Wayland: the app id ties the window to its .desktop file (icon, pinning) and is
         // required for `Window::activate_window`. X11: WM_CLASS.
         app_id: Some("decibell".into()),
+        // X11's taskbar and Alt-Tab icon (`_NET_WM_ICON`): GPUI's only icon option, X11-only.
+        // Wayland and KDE / GNOME on X11 also take the icon from the installed desktop file.
+        icon: x11_icon(),
         // GPUI caps an unfocused window's frames at 30 fps by default. People watch streams
         // in unfocused windows, so no cap. (Nothing is drawn at idle either way. The
         // power-saver and thermal caps stay at GPUI's defaults.)
         inactive_frame_interval: None,
         ..Default::default()
+    }
+}
+
+/// The app icon for X11's `_NET_WM_ICON` (64 × 64, the packages' hicolor PNG), decoded only when
+/// the window will be an X11 one (no `WAYLAND_DISPLAY`: GPUI then uses X11). Linux only.
+fn x11_icon() -> Option<std::sync::Arc<image::RgbaImage>> {
+    if !cfg!(target_os = "linux") || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty()) {
+        return None;
+    }
+    static PNG: &[u8] = include_bytes!("../../../assets/linux/icons/hicolor/64x64/apps/decibell.png");
+    match image::load_from_memory_with_format(PNG, image::ImageFormat::Png) {
+        Ok(icon) => Some(std::sync::Arc::new(icon.into_rgba8())),
+        Err(e) => {
+            log::warn!("[window] the X11 icon: {e}");
+            None
+        }
     }
 }

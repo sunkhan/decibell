@@ -7,6 +7,10 @@
 //! scrolling, each page landing with 0 px of movement of the row being read; a jump to a known
 //! message far below; back to the present.
 
+// Without `fixtures` (the shipped app) only the checks are reached: the self-test that starts them
+// in a child lives with the fixtures.
+#![cfg_attr(not(feature = "fixtures"), allow(dead_code))]
+
 use std::io::BufRead as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

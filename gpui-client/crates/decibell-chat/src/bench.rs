@@ -12,6 +12,7 @@
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "fixtures")]
 use anyhow::Result;
 
 static ALLOC_PROBE: OnceLock<fn() -> u64> = OnceLock::new();

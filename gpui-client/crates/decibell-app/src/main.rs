@@ -1,5 +1,8 @@
 //! The Decibell desktop client.
 
+// The shipped Windows build opens no console window; development builds keep theirs (stderr).
+#![cfg_attr(all(windows, feature = "ship"), windows_subsystem = "windows")]
+
 use std::process::ExitCode;
 
 use decibell_app::{args::Args, boot};

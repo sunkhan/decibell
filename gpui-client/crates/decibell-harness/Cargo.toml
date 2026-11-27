@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+# The shipped build (decibell-app's `ship`): the self-tests' probes are compiled out.
+ship = []
+
 [dependencies]
 gpui.workspace = true
 anyhow.workspace = true
