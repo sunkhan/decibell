@@ -16,6 +16,7 @@ mkdir -p "$pkg/resources" "$pkg/licenses" "$pkg/share/applications"
 install -m 0755 "$bin" "$pkg/decibell"
 printf '{"kind":"tarball","version":"%s"}\n' "$version" > "$pkg/resources/install.json"
 cp "$repo/gpui-client/assets/linux/decibell.desktop" "$pkg/share/applications/"
+before="$(cd "$pkg" && find . -exec stat -c '%n %s %Y' {} + | sort)"
 chmod -R a-w "$pkg"
 ro=(bwrap --dev-bind / / --ro-bind "$pkg" "$pkg" --)
 
@@ -37,5 +38,5 @@ grep -E 'signed-in|connected|EROFS|Read-only|ERROR' "$out" | head -10
 grep -q 'decibell: signed-in perf1' "$out" && echo "signed in: yes" || { echo "signed in: NO"; cat "$out" | tail -20; }
 echo "== the tree is unchanged"
 chmod -R u+w "$pkg"
-find "$pkg" -newer "$pkg/resources/install.json" -type f | sed "s|$tmp|<tmp>|" || true
-ls -la "$pkg" | sed "s|$tmp|<tmp>|"
+after="$(cd "$pkg" && find . -exec stat -c '%n %s %Y' {} + | sort)"
+if [ "$before" = "$after" ]; then echo "unchanged: yes ($(echo "$after" | wc -l) entries)"; else echo "CHANGED:"; diff <(echo "$before") <(echo "$after"); fi

@@ -307,7 +307,7 @@ it for the next start. Nothing at rest: the sender thread exists while a report 
 
 ## 8. Tests
 
-- `cargo test -p decibell-release`: 38 tests — versions, install stamps, the HTTP client (length, chunked,
+- `cargo test -p decibell-release`: 36 tests — versions, install stamps, the HTTP client (length, chunked,
   redirects, refused hosts, HTTPS with a test CA), the feed (signature with / without a key, tampering,
   another key, URL rules), the updater against a loopback fake GitHub (no update; available → downloading
   → downloaded → verified → staged; a tampered download refused, nothing left; a bad signature refused
@@ -339,6 +339,48 @@ See the tables below (this machine; filled by the packaging work, 2026-11-26).
 ### 9.4 The ship build against the targets
 
 ## 10. Read-only and isolated runs
+
+Results of 2026-11-26/27 on this machine (KDE Plasma 6.8 Wayland, RTX 4080).
+
+**The release tests** (`packaging/tests/release_e2e.py`, a development release build `--features dev-local`
+built from this branch, which has the test hooks; windows open for a few seconds per updater / apply case):
+
+```text
+PASS updater: no update: Idle → Checking → NotAvailable { checked_at: … }
+PASS updater: available → downloading → downloaded, staged and verified: 29 states, last Downloaded { version: "9.9.9" }
+PASS updater: never asks for releases/latest or Electron's files: …/native-latest/decibell-native.json, ….sig, …/native-v9.9.9/Decibell-9.9.9-x86_64.AppImage
+PASS updater: a tampered file is refused, nothing staged: Error { message: "the download doesn't match its checksum" }
+PASS updater: a bad signature is refused (test key baked): Error { message: "the update feed's signature doesn't match" }
+PASS updater: resumes after a cut connection: ranges [None, 'bytes=1000000-', 'bytes=2000000-']
+PASS updater: a tarball / package-manager install only says it is available: Idle → Checking → Available { version: "9.9.9" }
+PASS apply: the new version starts on trial, says so, and replaces the old file
+PASS apply: a version that doesn't start is rolled back and remembered: Error { message: "version 9.9.9 didn't start (it exited before showing a window (exit status: 3)), so 0.9.4 was kept" }
+PASS crash: Privacy toggle off → nothing sent, no connection
+PASS crash: no DSN baked → nothing sent, no connection
+PASS crash: a segfault leaves a record and dies as SIGSEGV: exit -11, 1 record(s)
+PASS crash: the next start sends the native crash, once: SIGSEGV at 0x8 in decibell
+```
+
+The panic case sent exactly one envelope; its value read `cannot open <path> for perf1 with token <token> at <ip>:
+"<redacted>"` with tags `platform linux, arch x64, os_release 7.3.6-1-cachyos, is_packaged true, install_kind
+tarball, panic_location crates/decibell-release/src/crash/mod.rs:308, thread decibell-test-panic`: everything but
+the account name was taken out, because the scrubber learns the account's and communities' names at sign-in
+(`watch_names`) and this child panicked before signing in. The test now registers the names as a signed-in app
+does (`DECIBELL_TEST_CRASH_NAMES`).
+
+**A packaged tree run read-only** (`packaging/tests/readonly-run.sh`; the tarball's layout with the same
+development `dev-local` build, since the ship build has neither self-tests nor `--login`; bubblewrap binds the
+tree read-only): `--selftest boot` PASS (17 bundled faces resolve), then `--login perf1` against the local stack:
+`decibell: signed-in perf1`, `decibell: connected Daily Gaming`; the tree is unchanged afterwards.
+
+**The ship binary, isolated** (`packaging/tests/ship-isolated.sh`: no saved sign-in, a private D-Bus with a
+throwaway gnome-keyring, an `LD_PRELOAD` logger of `socket` / `connect` / `sendto` / `sendmsg` /
+`getaddrinfo`, 10 s at the sign-in page): first frame shown; `[sentry] disabled (dev mode)` and
+`[update] mode=Disabled` (a ship binary outside a package); sockets: Unix only — Wayland, the X11 socket,
+the private session bus, the system bus — **no inet socket, no connection, no name lookup**; the
+throwaway keyring holds **one item, label `Decibell`, `url decibell://e2ee-local-key/<profile>`**: the at-rest
+key is created at the first start, before any sign-in (§11, item 10); the profile holds only
+`instance.lock`, `instance.sock` and `video-decoders.txt`.
 
 ## 11. Decisions and work for the owner
 
