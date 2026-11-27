@@ -289,7 +289,11 @@ fn start(
             let _ = login;
             let window = window::open_main(|_, cx| cx.new(decibell_shell::Shell::new).into(), Some(&app.profile), cx)?;
             // The decode capabilities are probed once the first frame is up (crate::video).
-            window.update(cx, |_, window, _| crate::video::probe_after_first_frame(window))?;
+            window.update(cx, |_, window, cx| {
+                crate::video::probe_after_first_frame(window);
+                // Watched streams stop decoding while the window isn't shown.
+                crate::video::follow_window_visibility(window, cx);
+            })?;
             // The updater: Settings → About's state and buttons, the first check after the first
             // frame; a version started on trial says it started.
             crate::updater::install(&model, &app.profile, args.update_trial.clone(), window.into(), cx);

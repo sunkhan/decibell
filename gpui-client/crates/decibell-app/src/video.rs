@@ -205,6 +205,19 @@ pub fn install(model: &Model, cx: &mut App) {
     .detach();
 }
 
+/// Tell the hub whether `window` is shown, now and at each change (minimised, suspended by the
+/// compositor: `Window::is_visible`): a stream seen only in a hidden window stops decoding and is
+/// asked for a keyframe when the window comes back (`StreamVideoPlayer.tsx`'s
+/// `visibilitychange`). The stream's sound is the core's and goes on.
+pub fn follow_window_visibility(window: &mut Window, cx: &mut App) {
+    let hub = VideoHub::global(cx);
+    let handle = window.window_handle();
+    hub.set_window_visible(handle, window.is_visible());
+    window
+        .observe_window_visibility(move |visibility, _, _| hub.set_window_visible(handle, visibility.is_visible()))
+        .detach();
+}
+
 /// Run the capability probe once `window`'s first frame is on screen (the app's main window):
 /// it opens real decoders on the renderer's device, which must not compete with the way to the
 /// first frame. A next-frame callback after a present is the closest GPUI has to "presented"
