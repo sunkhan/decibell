@@ -248,6 +248,74 @@ pub fn wayland_results() -> Vec<ChannelMessagePayload> {
     out
 }
 
+/// `search-paging-fixture`'s query.
+pub fn paging_query() -> SearchQuery {
+    q("paging", vec![])
+}
+
+/// How many pages `search-paging-fixture`'s answers hold.
+pub const PAGING_PAGES: u32 = 3;
+
+/// Page `n` (from 0) of `search-paging-fixture`'s answers, for the request numbered `seq`, all in
+/// `#general`, newest first. Pages 0 and 2 hold 20 results and end with one taller than the
+/// 400 px look-ahead (six body lines and ten files); page 1 holds two short results, so the end
+/// is still near when they arrive (the renderer's observer, made again when the results change,
+/// asks for page 2 without a scroll). Every page but the last says there is more.
+pub fn paging_page(n: u32, seq: u32) -> MessageSearchReceivedPayload {
+    let count = if n == 1 { 2 } else { 20 };
+    let newest = 1_790_000_000 - i64::from(n) * 100_000;
+    let messages: Vec<ChannelMessagePayload> = (0..count)
+        .map(|i| {
+            let id = 60_000 - i64::from(n) * 1_000 - i as i64;
+            let at = newest - i as i64 * 600;
+            let tall = i + 1 == count && n != 1;
+            if !tall {
+                return payload(id, ("perf2", 7), "general", &format!("paging result {} of page {}", i + 1, n + 1), at);
+            }
+            let body = (1..=8).map(|l| format!("paging, the tall result's line {l}")).collect::<Vec<_>>().join("\n");
+            let mut m = payload(id, ("perf3", 8), "general", &body, at);
+            m.attachments = (0..10)
+                .map(|f| AttachmentPayload {
+                    id: id * 100 + f,
+                    message_id: id,
+                    kind: "document".into(),
+                    filename: format!("paging-notes-{}.txt", f + 1),
+                    mime: "text/plain".into(),
+                    size_bytes: 2_048,
+                    url: String::new(),
+                    position: f as i32,
+                    created_at: at,
+                    purged_at: 0,
+                    width: 0,
+                    height: 0,
+                    thumbnail_size_bytes: 0,
+                    thumbnail_sizes_mask: 0,
+                    duration_ms: 0,
+                    placeholder: String::new(),
+                    encrypted: false,
+                })
+                .collect();
+            m
+        })
+        .collect();
+    MessageSearchReceivedPayload {
+        server_id: shell::DAILY_GAMING.to_string(),
+        seq,
+        success: true,
+        message: String::new(),
+        next_cursor: messages.last().map_or(0, |m| m.id),
+        messages,
+        has_more: n + 1 < PAGING_PAGES,
+        next_offset: 0,
+        total: 42,
+        total_capped: false,
+        text_skipped_channel_ids: Vec::new(),
+        partial: false,
+        retry_after_ms: 0,
+        first_page: n == 0,
+    }
+}
+
 /// The search a stage runs and the server's answer to it (its seq set when it is routed).
 fn search(stage: Stage) -> Option<(SearchQuery, MessageSearchReceivedPayload)> {
     let answer = |messages: Vec<ChannelMessagePayload>, total: i64, capped: bool, skipped: Vec<String>, has_more: bool| MessageSearchReceivedPayload {

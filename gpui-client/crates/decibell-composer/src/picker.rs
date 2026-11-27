@@ -318,6 +318,11 @@ impl Picker {
         &self.results
     }
 
+    /// The GIF grid's scroll position (the self-tests scroll it).
+    pub fn gif_scroll(&self) -> Option<ScrollHandle> {
+        self.gif.as_ref().map(|g| g.scroll.clone())
+    }
+
     pub fn gif_results(&self) -> &[GifResult] {
         self.gif.as_ref().map_or(&[], |g| &g.results)
     }
@@ -555,7 +560,7 @@ impl Picker {
                 seq: 0,
                 request: None,
                 scroll: ScrollHandle::new(),
-                last_offset: None,
+                last_offset: Rc::default(),
                 images: HashMap::new(),
                 fetching: 0,
                 unfiltered,
@@ -725,7 +730,8 @@ struct GifTab {
     seq: u64,
     request: Option<Task<()>>,
     scroll: ScrollHandle,
-    last_offset: Option<f32>,
+    /// The position the grid's last frame drew (`onScroll` fires when it changes).
+    last_offset: Rc<Cell<Option<f32>>>,
     /// Previews by URL.
     images: HashMap<String, Tile>,
     fetching: usize,
@@ -1013,14 +1019,28 @@ impl Picker {
         let theme = crate::ink::Ink::of(cx);
         let label = gif.provider.map_or("GIFs", GifProvider::label);
 
-        // Paging: near the bottom after a scroll (`onScroll`).
-        let offset = f32::from(gif.scroll.offset());
-        let scrolled = gif.last_offset.is_some_and(|last| last != offset);
-        gif.last_offset = Some(offset);
-        if scrolled && !gif.loading && gif.next.is_some() && f32::from(gif.scroll.max_offset()) - offset < GIF_LOAD_MORE {
-            let next = gif.next.clone();
-            cx.defer_in(window, move |this, _, cx| this.gif_load(next, cx));
-        }
+        // Paging (`onScroll`): in every frame the grid draws, with that frame's position, after a
+        // scroll that left the bottom within 300 px. From the frame, not from `render`: a render
+        // sees the position the frame before drew, and the scroll that lands near the end renders
+        // nothing after it (`search-paging`'s stall, 2026-11-27).
+        let on_frame = {
+            let last = gif.last_offset.clone();
+            let wanted = (!gif.loading).then(|| gif.next.clone()).flatten();
+            let view = cx.weak_entity();
+            move |frame: decibell_ui::ScrollFrame, _: &mut Window, cx: &mut App| {
+                let scrolled = last.replace(Some(frame.offset)).is_some_and(|before| before != frame.offset);
+                let Some(next) = wanted.clone().filter(|_| scrolled && frame.from_end() < GIF_LOAD_MORE) else { return };
+                let view = view.clone();
+                cx.defer(move |cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        // Once per page: the first frame's ask starts the load.
+                        if this.gif.as_ref().is_some_and(|g| !g.loading && g.next.as_ref() == Some(&next)) {
+                            this.gif_load(Some(next), cx);
+                        }
+                    });
+                });
+            }
+        };
 
         let notice = |title: String, body: Option<String>| {
             div()
@@ -1046,6 +1066,7 @@ impl Picker {
             notice(if gif.loading { "Loading…".into() } else { format!("No GIFs match \"{}\"", gif.debounced) }, None)
         } else {
             // Tiles near the viewport get their previews fetched.
+            let offset = f32::from(gif.scroll.offset());
             let viewport = f32::from(gif.scroll.viewport_height()).max(400.);
             let columns = into_columns(&gif.results);
             let mut wanted = Vec::new();
@@ -1104,7 +1125,7 @@ impl Picker {
             }
             div().flex().gap_1().children(columns_el).into_any_element()
         };
-        let body = ScrollArea::new("gif-body").track_scroll(&gif.scroll).flex_1().min_h_0().child(div().px_2().pb_2().child(content));
+        let body = ScrollArea::new("gif-body").track_scroll(&gif.scroll).on_frame(on_frame).flex_1().min_h_0().child(div().px_2().pb_2().child(content));
         let footer = div()
             .flex()
             .flex_none()

@@ -30,6 +30,9 @@ const OFFLINE_HEADER: f32 = 32.;
 const LOADING_ROW: f32 = 44.;
 const PAD_TOP: f32 = 4.;
 const PAD_BOTTOM: f32 = 12.;
+/// `PAGE_MARGIN` (`memberWindow.ts`): the next page loads once the loading row comes this near the
+/// viewport's bottom.
+const PAGE_MARGIN: f32 = 200.;
 /// `w-[260px]`.
 pub const MEMBERS_WIDTH: f32 = 260.;
 
@@ -138,17 +141,30 @@ impl Render for MembersList {
         let count = items.len();
         let items: Rc<[Item]> = items.into();
 
+        // The paging trigger (`nearLoadedEnd`): in every frame the list draws, with that frame's
+        // position, once the loading row (the end of what is loaded) is within 200 px of the
+        // viewport's bottom. From the frame, not from `render`: a render can see a position the
+        // frame then moves (a jump applied in prepaint), and the move that lands near the end may
+        // render nothing after it (`search-paging`'s stall, 2026-11-27).
+        let page_trigger = match (loading_index, community.clone()) {
+            (Some(index), Some(community)) if !loading => {
+                let loaded_end = f32::from(offsets[index]);
+                let asked = std::cell::Cell::new(false);
+                Some(move |frame: decibell_ui::ScrollFrame, _: &mut Window, cx: &mut App| {
+                    if asked.get() || frame.viewport <= 0. || loaded_end >= frame.offset + frame.viewport + PAGE_MARGIN {
+                        return;
+                    }
+                    asked.set(true);
+                    let community = community.clone();
+                    cx.defer(move |cx| community.roster.update(cx, |r, cx| r.load_more(cx)));
+                })
+            }
+            _ => None,
+        };
+
         let render_rows = {
             let model = model.clone();
             move |range: Range<usize>, _: &mut Window, cx: &mut App| -> Vec<AnyElement> {
-                // The paging trigger: the loading row (the end of what is loaded) is within the
-                // drawn stretch (the viewport and half of it either way).
-                if let (Some(index), Some(community)) = (loading_index, community.clone())
-                    && range.contains(&index)
-                    && !loading
-                {
-                    cx.defer(move |cx| community.roster.update(cx, |r, cx| r.load_more(cx)));
-                }
                 range
                     .map(|i| match items[i] {
                         Item::Pad => div().into_any_element(),
@@ -183,6 +199,7 @@ impl Render for MembersList {
             .child(
                 ScrollArea::new("member-list")
                     .track_scroll(&self.scroll)
+                    .when_some(page_trigger, |area, trigger| area.on_frame(trigger))
                     .flex_1()
                     .windowed(count, RowHeights::Offsets(offsets.into()), render_rows),
             )

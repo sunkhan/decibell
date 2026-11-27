@@ -1067,6 +1067,30 @@ async fn check_gif_picker(cx: TestCx) -> Result<()> {
     ensure!(asked == 1, "one search for the typed word, not one per key ({asked})");
     ensure!(waited >= Duration::from_millis(280), "debounced ({} ms)", waited.as_millis());
     cx.log(format_args!("one request for \"cat\", {} ms after the first key", waited.as_millis()));
+    // Paging (`onScroll`): the grid's end reached in one move longer than the 300 px look-ahead
+    // (a touchpad flick) asks for the next page, once.
+    wait_for(&cx, Duration::from_secs(5), "\"cat\"'s first page", |cx| picker.read(cx).gif_results().len() == 12 && !picker.read(cx).gif_loading()).await?;
+    let grid = cx.update(|_, cx| picker.read(cx).gif_scroll())?.context("the GIF grid")?;
+    wait_for(&cx, Duration::from_secs(5), "the grid laid out", |_| grid.max_offset() > gpui::px(400.)).await?;
+    let to_end = f32::from(grid.max_offset() - grid.offset());
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::Scroll(gpui::ScrollEvent {
+                position: grid.viewport_bounds().center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-to_end))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+                source: Default::default(),
+            }),
+            cx,
+        )
+    })?;
+    wait_for(&cx, Duration::from_secs(2), "the next page after a scroll to the grid's end", |cx| picker.read(cx).gif_results().len() == 24)
+        .await
+        .with_context(|| format!("asked: {:?}", fixture.asked.borrow()))?;
+    let pages = fixture.asked.borrow().iter().filter(|(q, pos, _)| q == "cat" && pos.as_deref() == Some("1")).count();
+    ensure!(pages == 1, "the next page was asked for {pages} times");
+    cx.log(format_args!("scrolled {to_end:.0} px to the grid's end in one move: page 2 asked for once, 24 GIFs"));
     let url = cx.update(|window, cx| picker.update(cx, |p, cx| p.send_gif_shown(0, window, cx)))?.context("a GIF")?;
     wait_for(&cx, Duration::from_secs(2), "picking a GIF to close the picker", |cx| composer.read(cx).picker().is_none()).await?;
     let id = echoed(&cx, OFF_TOPIC, &url).await?;

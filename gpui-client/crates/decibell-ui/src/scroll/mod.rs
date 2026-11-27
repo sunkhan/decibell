@@ -8,4 +8,4 @@ mod area;
 pub use animator::{
     LINE_STEP_PX, PAGE_STEP_FRACTION, PX_PER_GPUI_LINE, ScrollAnimator, ScrollKind, WHEEL_NOTCH_PX,
 };
-pub use area::{RowHeights, ScrollAlign, ScrollArea, ScrollHandle};
+pub use area::{RowHeights, ScrollAlign, ScrollArea, ScrollFrame, ScrollHandle};

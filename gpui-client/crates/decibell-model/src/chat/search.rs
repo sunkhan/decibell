@@ -480,6 +480,11 @@ impl SearchStore {
         self.sender = sender;
     }
 
+    /// How requests leave now (a self-test that replaces it puts it back).
+    pub fn sender(&self) -> SearchSender {
+        self.sender.clone()
+    }
+
     pub fn draft(&self, server: ServerId) -> SearchQuery {
         self.drafts.get(&server).cloned().unwrap_or_default()
     }

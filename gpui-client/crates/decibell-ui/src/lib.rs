@@ -63,7 +63,7 @@ pub use layer::layer;
 pub use popover::{
     DismissEvent, Placed, Placement, Popover, Side, place_menu, visible_window_bounds,
 };
-pub use scroll::{RowHeights, ScrollAlign, ScrollArea, ScrollHandle};
+pub use scroll::{RowHeights, ScrollAlign, ScrollArea, ScrollFrame, ScrollHandle};
 pub use select::{
     Select, SelectGroup, SelectHandle, SelectIcon, SelectOption, SelectSize, SelectVariant,
 };

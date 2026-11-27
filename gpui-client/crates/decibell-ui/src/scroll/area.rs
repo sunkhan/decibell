@@ -230,6 +230,26 @@ impl RowHeights {
 
 type RenderRows = Box<dyn Fn(Range<usize>, &mut Window, &mut App) -> Vec<AnyElement> + 'static>;
 
+/// Where an area is in a frame it draws (`ScrollArea::on_frame`), all in px.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollFrame {
+    /// The position drawn (scrollTop).
+    pub offset: f32,
+    /// The viewport's height.
+    pub viewport: f32,
+    /// The content's height.
+    pub content: f32,
+}
+
+impl ScrollFrame {
+    /// How far the viewport's bottom is from the content's end.
+    pub fn from_end(&self) -> f32 {
+        (self.content - self.offset - self.viewport).max(0.)
+    }
+}
+
+type OnFrame = Box<dyn Fn(ScrollFrame, &mut Window, &mut App) + 'static>;
+
 struct Windowed {
     count: usize,
     heights: RowHeights,
@@ -263,6 +283,7 @@ pub struct ScrollArea {
     gutter_stable: bool,
     keyboard: bool,
     windowed: Option<Windowed>,
+    on_frame: Option<OnFrame>,
 }
 
 impl ScrollArea {
@@ -276,7 +297,18 @@ impl ScrollArea {
             gutter_stable: false,
             keyboard: true,
             windowed: None,
+            on_frame: None,
         }
+    }
+
+    /// Called in every frame the area draws, with the position that frame draws, after the
+    /// position moved (a wheel, a key, a touchpad, a jump) and before anything is painted: what
+    /// a scroll listener or an `IntersectionObserver` with a `rootMargin` does in the renderer
+    /// ("load more when near the end"). Never in `render`, which sees the frame before. Keep it
+    /// cheap and change state only through `cx.defer`.
+    pub fn on_frame(mut self, on_frame: impl Fn(ScrollFrame, &mut Window, &mut App) + 'static) -> Self {
+        self.on_frame = Some(Box::new(on_frame));
+        self
     }
 
     /// Share the position with the owner (else it is kept in the area's element state).
@@ -497,6 +529,7 @@ impl RenderOnce for ScrollArea {
                 gutter: if gutter { px(bar) } else { px(0.) },
                 scale,
                 gutter_stable: area.gutter_stable,
+                on_frame: area.on_frame,
             })
             .child(scrollbar(state, bar, scale, thumb_color))
     }
@@ -510,6 +543,7 @@ struct ScrollContent {
     gutter: Pixels,
     scale: f32,
     gutter_stable: bool,
+    on_frame: Option<OnFrame>,
 }
 
 impl Element for ScrollContent {
@@ -583,6 +617,10 @@ impl Element for ScrollContent {
             }
             position
         };
+        if let Some(on_frame) = &self.on_frame {
+            let viewport = f32::from(self.state.borrow().viewport.size.height);
+            on_frame(ScrollFrame { offset: position as f32, viewport, content: f32::from(bounds.size.height) }, window, cx);
+        }
         window.with_element_offset(point(px(0.), px(-position as f32)), |window| {
             for child in &mut self.children {
                 child.prepaint(window, cx);

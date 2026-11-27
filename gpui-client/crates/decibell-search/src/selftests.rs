@@ -44,6 +44,11 @@ pub fn selftests() -> Vec<SelfTest> {
         parent!("search-supersede", "(local stack) a second search while the first runs: only the second's results show"),
         parent!("search-refused", "(local stack) searches over the community's bucket: the refusal is waited out and the retry answers"),
         parent!("search-paging", "(local stack) scrolling the results pages more in; the rows laid out stay bounded by the window"),
+        SelfTest {
+            name: "search-paging-fixture",
+            about: "results whose last card is taller than the 400 px look-ahead, the end reached by a scroll longer than it: the next page is asked for once, a short page that leaves the end near asks for the next by itself, the last asks for nothing (fixture, no network)",
+            run: |cx| Box::pin(paging_fixture(cx)),
+        },
         parent!("search-jump", "(local stack) Jump to a result far back in #general: lands with 0 px later movement, flashes, back to the present"),
         parent!("search-narrow", "(local stack) below 1024 px the results float over the chat; Jump closes them"),
         parent!("search-encrypted", "(local stack) a word search reports #vault (encrypted) as not searched, and the notice says so"),
@@ -238,6 +243,157 @@ async fn members_toggle(cx: TestCx) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// ── Paging on a fixture (in the runner: no stack) ───────────────────────────────────────────
+
+/// The results panel alone, in a window of its own.
+struct PagingRoot(gpui::AnyView);
+
+impl gpui::Render for PagingRoot {
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+        use decibell_ui::ActiveTheme as _;
+        use gpui::{ParentElement as _, Styled as _};
+        let theme = cx.theme();
+        let content = gpui::div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .font_family(theme.font(decibell_ui::FontRole::Sans))
+            .text_size(px(theme.scaled.text_body))
+            .text_color(theme.color_text_primary)
+            .child(decibell_ui::TitleBar::new("Decibell search test"))
+            .child(gpui::div().flex_1().min_h_0().flex().justify_end().child(gpui::div().w(px(crate::PANEL_WIDTH)).h_full().child(self.0.clone())));
+        decibell_ui::window_frame(content, window, cx)
+    }
+}
+
+/// A precise (touchpad) scroll of `by` px (+ = down) over the list.
+fn scroll_list(cx: &TestCx, list: &decibell_ui::ScrollHandle, by: f32) -> Result<()> {
+    let at = list.viewport_bounds().center();
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            PlatformInput::Scroll(ScrollEvent {
+                position: at,
+                delta: ScrollDelta::Pixels(point(px(0.), px(-by))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+                source: Default::default(),
+            }),
+            cx,
+        );
+    })
+}
+
+/// `search-paging`'s stall (2026-11-27), made deterministic: the list asked for the next page from
+/// `render`, which sees the position the frame before drew, and the scroll that reached the end
+/// renders nothing after it, so when that last move was longer than the look-ahead the page was
+/// never asked for. Here the end is reached by a 900 px move from 850 px above it.
+async fn paging_fixture(cx: TestCx) -> Result<()> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use decibell_model::chat::search::SearchArgs;
+    use gpui::{AppContext as _, TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions};
+
+    let server = ServerId::from_central(decibell_shell::fixture::DAILY_GAMING);
+    let sent: Rc<RefCell<Vec<SearchArgs>>> = Rc::default();
+    // The store's requests are recorded (and go nowhere); the answers are routed as the core's.
+    let previous = cx.app().update(|cx| {
+        let store = model(cx).chat.search.clone();
+        let previous = store.read(cx).sender();
+        let record = sent.clone();
+        store.update(cx, |s, cx| {
+            s.set_sender(Rc::new(move |args, _, _| record.borrow_mut().push(args)));
+            s.run(server, &crate::fixture::paging_query(), cx);
+        });
+        previous
+    });
+    let (handle, view) = cx.app().update(|cx| -> Result<(gpui::AnyWindowHandle, gpui::Entity<crate::ResultsView>)> {
+        let bounds = gpui::Bounds::centered(None, decibell_ui::outer_window_size(size(px(900.), px(700.))), cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions { title: Some("Decibell search test".into()), appears_transparent: true, traffic_light_position: None }),
+            window_decorations: Some(WindowDecorations::Client),
+            app_id: Some("decibell".into()),
+            ..Default::default()
+        };
+        let mut view = None;
+        let window = cx.open_window(options, |_, cx| {
+            let results = cx.new(|cx| crate::ResultsView::new(server, cx));
+            view = Some(results.clone());
+            cx.new(|_| PagingRoot(results.into()))
+        })?;
+        Ok((window.into(), view.context("no view")?))
+    })?;
+    let w = TestCx::new(cx.app().clone(), handle);
+    let result = async {
+        let answer = |n: u32| -> Result<()> {
+            let seq = sent.borrow().last().map(|a| a.seq).context("no request")?;
+            w.update(|_, cx| decibell_model::events::route(&model(cx), decibell_core::events::CoreEvent::MessageSearchReceived(crate::fixture::paging_page(n, seq)), cx))
+        };
+        wait_for(&w, Duration::from_secs(5), "the first request", |_| sent.borrow().len() == 1).await?;
+        answer(0)?;
+        let list = w.update(|_, cx| view.read(cx).scroll_handle().clone())?;
+        wait_for(&w, Duration::from_secs(5), "the first page laid out", |cx| model(cx).chat.search.read(cx).results.len() == 20 && list.max_offset() > px(1000.)).await?;
+        let tall = w.update(|_, cx| view.read(cx).row_offsets().into_iter().filter(|(id, _, _)| *id != 0).map(|(_, _, h)| h).next_back())?.unwrap_or_default();
+        w.log(format_args!("page 1: 20 results, the last card {tall:.0} px tall; list {} px in a {} px viewport", f32::from(list.max_offset() + list.viewport_height()), f32::from(list.viewport_height())));
+        ensure!(tall > super::results::LOAD_AHEAD, "the last card is {tall} px: not taller than the look-ahead");
+
+        // 850 px above the end, then 900 px down: the end in one move longer than the look-ahead.
+        let to_the_end = |w: &TestCx| -> Result<()> {
+            let near = f32::from(list.max_offset() - list.offset()) - 850.;
+            scroll_list(w, &list, near)
+        };
+        to_the_end(&w)?;
+        w.sleep(Duration::from_millis(150)).await;
+        ensure!(sent.borrow().len() == 1, "asked for a page 850 px from the end (the look-ahead is 400 px)");
+        let cursor = model_cursor(&w)?;
+        scroll_list(&w, &list, 900.)?;
+        wait_for(&w, Duration::from_secs(2), "page 2's request after the scroll reached the end", |_| sent.borrow().len() == 2)
+            .await
+            .with_context(|| format!("paging stopped: {}", w.update(|_, cx| view.read(cx).paging()).unwrap_or_default()))?;
+        let args = sent.borrow().last().cloned().context("no request")?;
+        ensure!(args.cursor == cursor, "page 2 asked from cursor {}, not {cursor}", args.cursor);
+        w.log(format_args!("page 2 asked for at {:.0} px of {:.0} (the end)", f32::from(list.offset()), f32::from(list.max_offset())));
+        // A short page: the end is still within the look-ahead, so the next is asked for with no
+        // scroll (the renderer's observer, made again when the results change, fires at once).
+        w.sleep(Duration::from_millis(150)).await;
+        ensure!(sent.borrow().len() == 2, "a second request before page 2 answered");
+        answer(1)?;
+        wait_for(&w, Duration::from_secs(2), "page 3's request without a scroll", |_| sent.borrow().len() == 3)
+            .await
+            .with_context(|| format!("a short page didn't pull the next: {}", w.update(|_, cx| view.read(cx).paging()).unwrap_or_default()))?;
+        let before = list.max_offset();
+        answer(2)?;
+        // Laid out: the store holds the page and a frame drew the longer list.
+        wait_for(&w, Duration::from_secs(5), "page 3 laid out", |cx| model(cx).chat.search.read(cx).results.len() == 42 && list.max_offset() > before + px(1000.)).await?;
+        to_the_end(&w)?;
+        w.sleep(Duration::from_millis(150)).await;
+        scroll_list(&w, &list, 900.)?;
+        w.sleep(Duration::from_millis(500)).await;
+        ensure!(list.offset() >= list.max_offset() - px(1.), "the last scroll didn't reach the end: {}", w.update(|_, cx| view.read(cx).paging())?);
+        // The last page said there is no more: a scroll to the end asks for nothing.
+        let requests = sent.borrow().len();
+        ensure!(requests == 3, "{requests} requests: the last page has no more");
+        let held = w.update(|_, cx| model(cx).chat.search.read(cx).results.len())?;
+        w.log(format_args!("3 requests, each once; {held} results held, the end reached with no fourth"));
+        Ok(())
+    }
+    .await;
+    let _ = w.update(|window, _| window.remove_window());
+    cx.app().update(|cx| {
+        model(cx).chat.search.update(cx, |s, cx| {
+            s.set_sender(previous);
+            s.close(cx);
+        })
+    });
+    result
+}
+
+/// The cursor the store will ask the next page from.
+fn model_cursor(cx: &TestCx) -> Result<i64> {
+    cx.update(|_, cx| model(cx).chat.search.read(cx).next_cursor)
 }
 
 // ── The checks, inside the signed-in app ────────────────────────────────────────────────────

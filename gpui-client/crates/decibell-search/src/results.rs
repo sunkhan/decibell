@@ -40,7 +40,7 @@ pub const FLOATING_WIDTH: f32 = 360.;
 /// The scrollbar's width while the list overflows (Chromium's thin bar takes layout space).
 const BAR: f32 = 10.;
 /// The sentinel's `rootMargin: "400px 0px"`: the next page is asked for this near the end.
-const LOAD_AHEAD: f32 = 400.;
+pub(crate) const LOAD_AHEAD: f32 = 400.;
 
 /// The panel drawn last, while it lives (the self-tests check it is dropped when closed).
 pub struct ShownResults(pub WeakEntity<ResultsView>);
@@ -363,21 +363,43 @@ impl ResultsView {
         self.model.chat.search.update(cx, |s, cx| s.close(cx));
     }
 
-    /// Asks for the next page when the end of what is loaded is within 400 px.
-    fn maybe_load_more(&mut self, cx: &mut Context<Self>) {
-        let Some(list) = &self.list else { return };
-        let total = list.offsets.last().copied().unwrap_or_default();
-        let sentinel = total - px(result_row::SENTINEL + result_row::LIST_PAD_BOTTOM);
-        let bottom = self.scroll.offset() + self.scroll.viewport_height();
-        let viewport_known = self.scroll.viewport_height() > px(0.);
-        if !self.asked && viewport_known && bottom + px(LOAD_AHEAD) >= sentinel && self.seen.has_more && !self.seen.loading_more {
-            self.asked = true;
-            // Not from `render`: after this frame.
-            cx.defer(|cx| {
-                let model = Model::global(cx).clone();
-                model.chat.search.update(cx, |s, cx| s.load_more(cx));
-            });
+    /// The sentinel's observer (`IntersectionObserver`, `rootMargin: 400px`, re-made when the
+    /// results change): in every frame the list draws, with that frame's position
+    /// (`ScrollArea::on_frame`), the next page is asked for once the end of what is loaded is
+    /// within 400 px of the viewport's bottom. From the frame, not from `render`: a render sees the
+    /// position the frame before drew, and the scroll that lands at the end (a touchpad's delta, a
+    /// wheel animation's last step, a jump) renders nothing after it, so a check in `render` never
+    /// saw the end when that last move was longer than the look-ahead and paging stopped
+    /// (`search-paging`, 2026-11-27). `None` while there is nothing to ask for.
+    fn load_trigger(&self, cx: &mut Context<Self>) -> Option<impl Fn(decibell_ui::ScrollFrame, &mut Window, &mut App) + 'static> {
+        let list = self.list.as_ref()?;
+        if self.asked || !self.seen.has_more || self.seen.loading_more {
+            return None;
         }
+        let total = f32::from(list.offsets.last().copied().unwrap_or_default());
+        let sentinel = total - (result_row::SENTINEL + result_row::LIST_PAD_BOTTOM);
+        let view = cx.weak_entity();
+        let fired = std::cell::Cell::new(false);
+        Some(move |frame: decibell_ui::ScrollFrame, _: &mut Window, cx: &mut App| {
+            if fired.get() || frame.viewport <= 0. || frame.offset + frame.viewport + LOAD_AHEAD < sentinel {
+                return;
+            }
+            fired.set(true);
+            let view = view.clone();
+            // After this frame.
+            cx.defer(move |cx| {
+                let _ = view.update(cx, |this, cx| this.load_more(cx));
+            });
+        })
+    }
+
+    /// The next page, once per page.
+    fn load_more(&mut self, cx: &mut Context<Self>) {
+        if self.asked || !self.seen.has_more || self.seen.loading_more {
+            return;
+        }
+        self.asked = true;
+        self.model.chat.search.update(cx, |s, cx| s.load_more(cx));
     }
 }
 
@@ -536,7 +558,7 @@ impl ResultsView {
         let overflowing = self.scroll.max_offset() > px(0.5);
         let width = panel - 1. - if overflowing { BAR } else { 0. } - 2. * result_row::LIST_PAD_X;
         self.layout(width, style, cx);
-        self.maybe_load_more(cx);
+        let load_trigger = self.load_trigger(cx);
         let column = result_row::column_width(width);
         let (jumped, loading_more, has_more) = {
             let store = self.model.chat.search.read(cx);
@@ -580,6 +602,7 @@ impl ResultsView {
         let ink = *ink;
         ScrollArea::new("search-results-list")
             .track_scroll(&self.scroll)
+            .when_some(load_trigger, |area, trigger| area.on_frame(trigger))
             .flex_1()
             .windowed(items.len(), RowHeights::Offsets(list.offsets.clone()), move |range, window, cx| {
                 rows.used.borrow_mut().clear();
