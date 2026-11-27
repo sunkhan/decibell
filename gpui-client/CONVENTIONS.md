@@ -584,9 +584,11 @@ avatar editor subscribes and opens over Settings).
   unless the build honours `DECIBELL_CENTRAL` (debug, or the app's `dev-local`, which turns on this crate's
   `dev-local`) and it is loopback; perf1's checks put back what they change and log out (forgetting their
   device). `settings-keybinds-record` runs its child under XWayland: the X11 listener grabs exactly the bound
-  combos, where the Wayland portal would open the desktop's confirmation dialog. (Self-tests and screens
-  share one namespace: the self-tests that would take a screen's name carry a suffix,
-  `settings-devices-signout`, `settings-keybinds-record`, ….) The checks type into the fields
+  combos, where the Wayland portal would open the desktop's confirmation dialog. (Screens and self-tests
+  are two namespaces, as the registry checks: a test may share the name of the screen it exercises
+  (`kit-scroll`), and one that exercises something else takes its own: `settings-devices-signout`,
+  `settings-keybinds-record`, `server-settings-narrow` (Server and Channel Settings; the `settings-narrow`
+  screen is user Settings).) The checks type into the fields
   (`TestCx::type_text`, `keystroke("tab" | "enter" | "ctrl-a")`), click by probes (the user panel's gear
   `user-panel-settings`, the tabs `settings-tab:<id>`, the views' own) and record keybinds from events
   built as xkb's `de` and `tr` keymaps produce them (`KeyCode::Evdev` + what the layout types).

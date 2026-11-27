@@ -113,7 +113,7 @@ pub fn selftests() -> Vec<SelfTest> {
             run: |cx| Box::pin(picture_editor(cx)),
         },
         SelfTest {
-            name: "settings-narrow",
+            name: "server-settings-narrow",
             about: "Server and Channel Settings below 1024 px fold the sidebar into the rail; above, the full sidebar",
             run: |cx| Box::pin(settings_narrow(cx)),
         },
