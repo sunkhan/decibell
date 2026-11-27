@@ -619,7 +619,7 @@ building). Every self-test runs the app as children with throwaway profiles on a
 | `keyring-label` | a throwaway gnome-keyring on the private bus holds the at-rest key's item and a test item labelled `Decibell` (patch `0016`); read and delete find them |
 | `window-state` | Wayland: resized to 1020 × 720 → quit → reopened at 1020 × 720; maximised → reopened maximised → unmaximised to 1020 × 720. X11: the same with the visible size (1000 × 700, exact after the one-time correction of §5), and a saved place at 100000,100000 reopens on a screen |
 | `profile-guard` | with `HOME` a temporary directory and no `DECIBELL_USER_DATA_DIR`, the app and `decibell-headless` use `~/.cache/decibell-dev/gpui-default`; pointed at `~/.config/decibell` both exit 2 and create nothing; the real `~/.config/decibell` never appears |
-| `idle-x11` | in a private Xvfb (21.1, `-displayfd`, stopped by its pid; input faked there with XTEST, nowhere else), SYNC `IDLETIME` alarms at a 2 s threshold: idle **2.001 s** after the last input, active **< 1 ms** after the next, idle again 2.002 s after it; the `x11-idle` thread woke **0 times** in 3 s Away and 0 in 1 s active at rest; threshold raised to 4 s (no edge at 2 s), lowered to 2 s at 3 s idle (idle edge < 1 ms later), raised to 5 s while idle (active by the reading, idle at 5.001 s); disable → the thread gone, enable → a new one. MIT-SCREEN-SAVER (SYNC skipped: no X server lets it be switched off): readings only, no thread, no edges; a server without MIT-SCREEN-SAVER either: unsupported. The desktop, read-only: on Wayland the app picks the core's source and starts nothing of this; with `WAYLAND_DISPLAY` empty (XWayland) it picks the X11 source, starts nothing before statuses, then Xwayland 24.1 offers SYNC `IDLETIME` (no MIT-SCREEN-SAVER) and the thread woke 0 times in 5 s; statuses off → the thread gone |
+| `idle-x11` | in a private Xvfb (21.1, `-displayfd`, stopped by its pid; input faked there with XTEST, nowhere else), SYNC `IDLETIME` alarms at a 2 s threshold: idle **2.001–2.002 s** after the last input, active **0.15 ms** after the next (the alarm thread's send, measured from the XTEST request), idle again 2.002 s after it; the `x11-idle` thread woke **0 times** in 3 s Away and 0 in 1 s active at rest; threshold raised to 4 s (no edge at 2 s), lowered to 2 s at 3 s idle (idle edge 0.12 ms later), raised to 5 s while idle (active by the reading, idle at 5.002 s); disable → the thread gone, enable → a new one. Two runs, both passed. MIT-SCREEN-SAVER (SYNC skipped: no X server lets it be switched off): readings only, no thread, no edges; a server without MIT-SCREEN-SAVER either: unsupported. The desktop, read-only: on Wayland the app picks the core's source and starts nothing of this; with `WAYLAND_DISPLAY` empty (XWayland) it picks the X11 source, starts nothing before statuses, then Xwayland 24.1 offers SYNC `IDLETIME` (no MIT-SCREEN-SAVER) and the thread woke 0 times in 5 s; statuses off → the thread gone |
 | `content-copy-image` | Wayland and X11 each: three pictures copied with "Copy image" (a 1600 × 900 PNG, 313 KB; a GIF's first frame, 46 KB; 2.8 MB of noise) offered as `image/png` only (no text types), read back by another process (`wl-paste`; `tools/x11_clipboard.py`, INCR for the 2.8 MB) after the window lost the focus, pixels identical; on Wayland a `wl-paste --watch` reader (a clipboard manager's way) got each at once; the owner's clipboard read before and put back after (through Klipper), checked |
 
 **At rest** (the sign-in page, unfocused, 15 s settle + 40 s, `tools/perf/measure.sh`; the same commit before and after
@@ -628,6 +628,16 @@ executor, the screen-lock watcher's, blocked on its socket), own wakeups **0 →
 both; anonymous memory 26.9 → 27.3 MB, private dirty 41.6 → 42.4 MB (private and PSS moved by tens of MB between
 runs of the same binary: the machine was swapping, 17.7 GB of swap in use). The launcher-progress connection exists
 only while a progress shows.
+
+**X11 idle source at rest** (2026-11-27, `wip/platform2`, release + `dev-local`; the base `704dff0` built the same way;
+sign-in page unfocused, 15 s settle + 40 s of `tools/perf/measure.sh`): Wayland 37 → 37 threads, XWayland
+(`WAYLAND_DISPLAY=`) 38 → 38; own wakeups **0.0 → 0.0 / s** on both (driver 4.0, NVIDIA's `[vkps] Update`; 0.5 / s
+on one unnamed thread, both builds); 0 frames; CPU 0.005–0.009 % of a core. The X11 source is chosen under XWayland
+(`idle source x11`) but on the sign-in page auto-away is off, so it has no connection and no thread. With statuses on
+(`--check platform-idle-source`, `DECIBELL_CHECK_HOLD_SECS=75`, Xwayland idle past the 10-minute threshold: the idle
+alarm fired at once and the thread waited for input): 39 threads, the one more being `x11-idle`, **0 context switches
+in 40 s**, parked in `ppoll`; own wakeups 0.0 / s. (One baseline XWayland run showed the main thread at 2 / s and the
+driver at 15 / s with 0 frames, a disturbed run: rerun, 0.0.)
 
 ### Stream playback (`crates/decibell-video`, 2026-11-26)
 
@@ -992,10 +1002,13 @@ Measured by the wiring agent with `tools/perf/measure.sh` (20 s settle + 60 s), 
   on a real Turkish or German keyboard under Wayland, and on Windows (scan codes there were never run).
 - **X11 idle reading: done** (`decibell-platform/src/idle/x11.rs`, self-test `idle-x11`; the owner's check on a real
   X11 session is in §6). Left open: under **XWayland** (the client started with `WAYLAND_DISPLAY` empty) the source
-  reads Xwayland's counter, which counts only the input Xwayland receives; whether KWin forwards enough of the rest
-  is the §6 item's question. The core's `ext-idle-notify` would be exact there, but it finds the compositor through
-  the same `WAYLAND_DISPLAY`. And the MIT-SCREEN-SAVER fallback (servers without SYNC `IDLETIME`: none known among
-  Xorg, Xvfb, Xwayland, which also lacks MIT-SCREEN-SAVER) leaves `AutoAway` its one-second re-read while Away.
+  reads Xwayland's counter, which counts only the input Xwayland receives: its own windows', plus what KWin's
+  "Legacy X11 App Support" forwards (KWin 6.8 has no other path into it: `libkwin` links neither XTEST nor
+  ForceScreenSaver); whether that is enough is the §6 item's question. The core's `ext-idle-notify` would be exact
+  there, but it finds the compositor through the same `WAYLAND_DISPLAY`, so the choice is this counter or
+  "unsupported" (never Away by idle), as before. And the MIT-SCREEN-SAVER fallback (for a server without SYNC
+  `IDLETIME`: Xvfb 21.1 and Xwayland 24.1 have it, Xorg's SYNC is the same server code; Xwayland has no
+  MIT-SCREEN-SAVER at all) leaves `AutoAway` its one-second re-read while Away.
 - `system_idle` can only be queried, not subscribed to: auto-away is late by up to one threshold on Wayland.
   (Device changes and the mic test outside voice exist since 2026-11-26: `api::audio`.)
 - **Voice receive path allocates per packet** (~5 allocations per voice packet per talking peer; the core
