@@ -69,14 +69,14 @@ briefed from the audit reports (`docs/parity-audit-{a,b,c}.md`), the `PARITY.md`
 `PARITY.md` on the head: **32 rows `done`, 10 `needs owner`, 52 `partial`** of 94 (10 / 1 / 83 after the first
 audit). Round 1 is landed for every area; the 52 are round 2's (the `wip/r2-*` branches hold its start).
 
-**The shared account `alice` has encryption keys on the test central since 2026-11-27 ~22:40** (set up from the
-app while the owner tried the client as alice; the passphrase is the owner's). A fresh profile signing in as
-alice now opens the unlock prompt, which takes every click: `user-menu-moderation` fails on it ("timed out
-after 10 s waiting for Daily Gaming": the click on the server tile lands on the prompt). Either the keys are
-removed from the test stack (`e2ee_keys`, `e2ee_backups` rows of alice's uid: ask the owner first, it is his
-trial state) or the owner gets trial accounts of his own that no test uses; tests that sign in as a shared
-account should not assume it has no keys. Each shared account also has 100 device rows on central (every
-fresh-profile sign-in is a device): harmless so far.
+**Trial accounts for the owner: `try1` and `try2`** (password as the stack's; members of Daily Gaming and
+Design Lab). No test or agent uses them, and the owner doesn't use the shared accounts: on 2026-11-27 he tried
+the client as `alice` and set up encryption there, after which every fresh sign-in as alice opened the unlock
+prompt and `user-menu-moderation` failed on it. Alice's keys and backup were removed from the test central on
+2026-11-28 with his OK (`e2ee_keys`, `e2ee_backups`, uid 1); **the old trial profiles
+`~/.cache/decibell-dev/try-alice` / `try-bob` still hold alice's local identity and would publish it again if
+used**. Tests that sign in as a shared account should not assume it has no keys. Each shared account also has
+100 device rows on central (every fresh-profile sign-in is a device): harmless so far.
 
 ### Merged today (2026-11-27), each verified before or right after its push
 
