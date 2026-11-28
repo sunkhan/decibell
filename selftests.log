@@ -1,0 +1,779 @@
+  [1m[96m--> [0mcrates\decibell-platform\src\progress.rs:20:34
+   [1m[96m|[0m
+[1m[96m20[0m [1m[96m|[0m use gpui::{AnyWindowHandle, App, AppContext as _, Subscription};
+   [1m[96m|[0m                                  [1m[93m^^^^^^^^^^^^^^^[0m
+   [1m[96m|[0m
+   [1m[96m= [0m[1m[97mnote[0m: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m[1m[97m: constant `IO_TIMEOUT` is never used[0m
+  [1m[96m--> [0mcrates\decibell-platform\src\instance.rs:34:7
+   [1m[96m|[0m
+[1m[96m34[0m [1m[96m|[0m const IO_TIMEOUT: Duration = Duration::from_secs(5);
+   [1m[96m|[0m       [1m[93m^^^^^^^^^^[0m
+   [1m[96m|[0m
+   [1m[96m= [0m[1m[97mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m: `decibell-platform` (lib) generated 2 warnings (run `cargo fix --lib -p decibell-platform` to apply 1 suggestion)
+[1m[92m   Compiling[0m decibell-text-gallery v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-text\gallery)
+[1m[92m   Compiling[0m decibell-app v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-app)
+[1m[93mwarning[0m: `decibell-core` (lib) generated 4 warnings
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 3m 42s
+=== cargo build --features dev-local
+   [1m[96m|[0m
+   [1m[96m= [0m[1m[97mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[92m   Compiling[0m decibell-chat v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-chat)
+[1m[93mwarning[0m: `decibell-platform` (lib) generated 2 warnings (run `cargo fix --lib -p decibell-platform` to apply 1 suggestion)
+[1m[92m   Compiling[0m decibell-server-settings v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-server-settings)
+[1m[92m   Compiling[0m decibell-chat-content v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-chat-content)
+[1m[92m   Compiling[0m decibell-search v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-search)
+[1m[92m   Compiling[0m decibell-home v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-home)
+[1m[92m   Compiling[0m decibell-composer v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-composer)
+[1m[92m   Compiling[0m decibell-servers v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-servers)
+[1m[92m   Compiling[0m decibell-voice v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-voice)
+[1m[92m   Compiling[0m decibell-settings v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-settings)
+[1m[93mwarning[0m: `decibell-core` (lib) generated 4 warnings
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 2m 38s
+=== decibell --selftest boot
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest boot: the window opens, a first frame is presented, every bundled face resolves
+    first frame presented 674.5 ms after start
+    window 1280×800 at scale 1, Server
+    17 bundled faces resolve: 13 identified by their metrics, 4 as distinct faces
+selftest boot: PASS (66 ms)
+selftest: 1 passed, 0 failed, 0 skipped, 0 inconclusive
+=== exit 0 (boot)
+=== decibell --selftest idle-frames
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest idle-frames: nothing is drawn or presented, and the main thread sleeps, while idle
+    attempt 1: 0 drawn, 0 presented, ? main-thread wakeups in 5 s
+selftest idle-frames: PASS (5312 ms)
+selftest: 1 passed, 0 failed, 0 skipped, 0 inconclusive
+=== exit 0 (idle-frames)
+=== decibell --selftest themes,window-frame
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest themes: each of the seven themes repaints in exactly one frame, then idles
+    7 switches, one frame each
+    F8 steps the theme in one frame
+selftest themes: PASS (5238 ms)
+selftest window-frame: maximising drops the client-side margin and restoring brings it back
+    server-side decorations: the window has no frame of ours to check
+selftest window-frame: PASS (0 ms)
+selftest: 2 passed, 0 failed, 0 skipped, 0 inconclusive
+=== exit 0 (themes,window-frame)
+=== decibell --selftest video-probe
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest video-probe: needs no stream files: the capability probe from nothing, then the frame compiled into the binary decoded, published and drawn in a window for each codec, on the decoder the probe found and in software
+decibell: WARN [decibell_video::select] video: H.264 decode with d3d11va does not work here and is not tried again this session: the device has no Direct3D 11 video interface: No such interface supported (0x80004002)
+decibell: WARN [decibell_video::select] video: H.265 decode with d3d11va does not work here and is not tried again this session: the device has no Direct3D 11 video interface: No such interface supported (0x80004002)
+decibell: WARN [decibell_video::select] video: AV1 decode with d3d11va does not work here and is not tried again this session: the device has no Direct3D 11 video interface: No such interface supported (0x80004002)
+decibell: INFO [decibell_video::probe] video: decode capabilities probed in 41 ms: H.264 software, H.265 software, AV1 software
+    H.264 with d3d11va: not used, the device has no Direct3D 11 video interface: No such interface supported (0x80004002)
+    H.265 with d3d11va: not used, the device has no Direct3D 11 video interface: No such interface supported (0x80004002)
+    AV1 with d3d11va: not used, the device has no Direct3D 11 video interface: No such interface supported (0x80004002)
+    H.264: Software (FFmpeg) (decoded the test frame)
+    H.265: Software (FFmpeg) (decoded the test frame)
+    AV1: Software (dav1d) (decoded the test frame)
+decibell: INFO [decibell_video::hub] video: stream selftest-probe-H.264-software: software decoder for H.264 opened in 0.5 ms
+decibell: INFO [decibell_video::hub] video: stream selftest-probe-H.264-software: DecoderOpened { codec: H264, path: Software, backend: Software }
+decibell: INFO [decibell_video::hub] video: stream selftest-probe-H.264-software: Picture { width: 320, height: 240 }
+    H.264 with software: codec=H.264 path=software backend=software size=320x240 received=1 decoded=1 published=1 presented=1 replaced=0 dropped=0 errors=0 opens=1 fallbacks=0 device_losses=0 keyframe_requests=1 queue=0 decode_ms_p50=1.38 decode_ms_p99=1.38 latency_ms_p50=2.50 latency_ms_p99=2.50 present_interval_ms_p50=0.00 present_interval_ms_p99=0.00 threads=1 textures=10 present_wakes=1 packet_copies=0
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v1): window not found
+decibell: INFO [decibell_video::hub] video: stream selftest-probe-H.265-software: software decoder for H.265 opened in 0.4 ms
+decibell: INFO [decibell_video::hub] video: stream selftest-probe-H.265-software: DecoderOpened { codec: Hevc, path: Software, backend: Software }
+decibell: INFO [decibell_video::hub] video: stream selftest-probe-H.265-software: Picture { width: 320, height: 240 }
+    H.265 with software: codec=H.265 path=software backend=software size=320x240 received=1 decoded=1 published=1 presented=1 replaced=0 dropped=0 errors=0 opens=1 fallbacks=0 device_losses=0 keyframe_requests=1 queue=0 decode_ms_p50=1.44 decode_ms_p99=1.44 latency_ms_p50=2.50 latency_ms_p99=2.50 present_interval_ms_p50=0.00 present_interval_ms_p99=0.00 threads=1 textures=10 present_wakes=3 packet_copies=0
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v3): window not found
+decibell: INFO [decibell_video::hub] video: stream selftest-probe-AV1-software: software decoder for AV1 opened in 0.3 ms
+decibell: INFO [decibell_video::hub] video: stream selftest-probe-AV1-software: DecoderOpened { codec: Av1, path: Software, backend: Software }
+decibell: INFO [decibell_video::hub] video: stream selftest-probe-AV1-software: Picture { width: 320, height: 240 }
+    AV1 with software: codec=AV1 path=software backend=software size=320x240 received=1 decoded=1 published=1 presented=1 replaced=0 dropped=0 errors=0 opens=1 fallbacks=0 device_losses=0 keyframe_requests=1 queue=0 decode_ms_p50=1.50 decode_ms_p99=1.50 latency_ms_p50=2.50 latency_ms_p99=2.50 present_interval_ms_p50=0.00 present_interval_ms_p99=0.00 threads=1 textures=10 present_wakes=5 packet_copies=0
+selftest video-probe: PASS (2175 ms)
+selftest: 1 passed, 0 failed, 0 skipped, 0 inconclusive
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v5): window not found
+=== exit 0 (video-probe)
+=== decibell --selftest kit-idle,kit-switch,kit-select,kit-modal,kit-confirm,kit-scroll,kit-toast
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest kit-idle: every kit screen settles to 0 frames drawn and presented
+    kit-buttons: 0 frames drawn over 2 s at rest, 95 presents in 2 s (the spinners' scene animation)
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v1): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v1): window not found
+    kit-forms: 0 frames drawn over 2 s at rest
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v3): window not found
+    kit-overlays: 0 frames drawn over 2 s at rest
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v5): window not found
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+    kit-layers: 0 frames drawn over 2 s at rest
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v7): window not found
+    kit-dialogs: 0 frames drawn over 2 s at rest
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v9): window not found
+    kit-settings: 0 frames drawn over 2 s at rest
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v11): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v11): window not found
+    kit-settings-rail: 0 frames drawn over 2 s at rest
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v13): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v13): window not found
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+    kit-identity: 0 frames drawn over 2 s at rest
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v15): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v15): window not found
+    kit-scroll: 0 frames drawn over 2 s at rest
+selftest kit-idle: PASS (27600 ms)
+selftest kit-switch: a click toggles a switch: the 150 ms transition's frames, then idle
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v17): window not found
+    toggled on: 10 frames, the last 189 ms after the click
+    toggled off: 11 frames, the last 190 ms after the click
+selftest kit-switch: PASS (4698 ms)
+selftest kit-select: select: open by click and key, navigate, typeahead, choose, Escape; hover doesn't scroll
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v19): window not found
+    click opens; ↓ ↓ h Enter chooses Hotel
+    ↓ opens centred on Hotel (list at 50.0 px); Escape closes and stays in the select
+    hover moved the active row to Some(9); the list stayed at 50.0 px
+selftest kit-select: PASS (6125 ms)
+selftest kit-modal: modal: focus trapped, a vetoed Escape shakes the save bar, closes, focus restored, stacking
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v21): window not found
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+    Tab ×8 stayed inside the modal (fields [Some(0), Some(1), Some(2), None, None, Some(0), Some(1), Some(2)]; None = its save bar's buttons)
+    vetoed Escape: shake 23 frames over 375 ms
+    two modals: Escape closed the top one only
+    closed: fade-out 13 frames over 325 ms; focus restored
+selftest kit-modal: PASS (7506 ms)
+selftest kit-confirm: confirm dialog: Enter confirms as it opens and with Cancel focused (once), Space on Cancel and Escape cancel, a disabled confirm ignores Enter
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v23): window not found
+    Enter as the dialog opened (its layer focused): confirmed once
+    Tab (Cancel focused), Enter: confirmed once, Cancel not clicked
+    Space on the focused Cancel and Escape cancel
+    a disabled confirm button: Enter does nothing; Escape still cancels
+selftest kit-confirm: PASS (4005 ms)
+selftest kit-scroll: wheel notches, keys and precise deltas follow the Chromium model frame by frame; idle at rest
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v25): window not found
+    W1 one notch: 11 frames on the model (input-time bracket ≤ 0.04 px), ended at 120 (expected 120), 11 drawn
+    W3 two notches 60 ms apart: 15 frames on the model (input-time bracket ≤ 0.05 px), ended at 360 (expected 360), 15 drawn
+    W6 reversal: 17 frames on the model (input-time bracket ≤ 0.03 px), ended at 360 (expected 360), 17 drawn
+    W4 three notches 30 ms apart: 13 frames on the model (input-time bracket ≤ 0.08 px), ended at 720 (expected 720), 13 drawn
+    K1 ArrowDown: 10 frames on the model (input-time bracket ≤ 0.49 px), ended at 760
+    K2 PageDown (⌊0.875 × 400⌋ = 350): 11 frames on the model (input-time bracket ≤ 0.77 px), ended at 880
+    precise 50 px: moved -50 px at once, 1 frames drawn
+    at the end: a notch draws nothing
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v27): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v27): window not found
+selftest kit-scroll: PASS (10872 ms)
+selftest kit-toast: a toast appears, its timer dismisses it, and no timer or frame is left
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v29): window not found
+    shown: entrance 17 frames over 294 ms
+    dismissed by its timer; then 0 drawn, 0 presented, ? main-thread wakeups in 2 s
+selftest kit-toast: PASS (4838 ms)
+selftest: 7 passed, 0 failed, 0 skipped, 0 inconclusive
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v31): window not found
+=== exit 0 (kit-idle,kit-switch,kit-select,kit-modal,kit-confirm,kit-scroll,kit-toast)
+=== decibell --selftest input-typing,input-undo,input-ime,input-atoms,input-bytes-cap,input-select-filter,input-caret-idle
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest input-typing: type, move, select (keys and mouse), delete in a field and a text area: value, caret, one frame per key
+    typed 23 characters: 1 frame each (2 for the first key after the click)
+    a 1.5 s drag past the edge scrolled and selected 77 characters
+    a new line in a 4-line text area: DisplayStats { shaped: 1, reused: 4, wrapped: 0 }
+selftest input-typing: PASS (9850 ms)
+selftest input-undo: undo takes a typing burst back at once; a Backspace, a caret move and a paste start new steps; redo
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v1): window not found
+    burst with a pause, Backspace + retype, caret move, paste: 5 undo steps; redo; typing drops the redo steps
+selftest input-undo: PASS (2080 ms)
+selftest input-ime: a composition driven as an IME drives it: preedit marked and underlined, candidate position, commit, one undo step
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v3): window not found
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+    preedit ×4 (1 frame each), UTF-16 ranges, candidate position, commit, one undo step, cancel, blur
+selftest input-ime: PASS (3049 ms)
+selftest input-atoms: emoji in the composer: one caret step, one deletion, copied as characters; a typed :shortcode: becomes one
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v5): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v5): window not found
+    atoms: one step, one deletion, copied as characters, clicked by halves; :fire: → 🔥; Enter / Shift+Enter / open fence
+selftest input-atoms: PASS (2676 ms)
+selftest input-bytes-cap: a 1024-byte cap clamps multi-byte text as lib/utf8.ts clampLine does, typed and pasted
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v7): window not found
+    1,680 bytes pasted → 1021 kept on a character boundary; typing at the cap and in the middle; control characters
+selftest input-bytes-cap: PASS (829 ms)
+selftest input-select-filter: a select's filter row is a text field: typing filters, the arrows and Enter still choose, Escape closes
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v9): window not found
+    typed "fox" Enter → Foxtrot; edited the filter to "li", ↓ Enter → Juliet; Escape closes
+selftest input-select-filter: PASS (5328 ms)
+selftest input-caret-idle: the caret blinks at 2 frames/s only while focused in the active window; blurred or inactive: 0 frames in 5 s
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v11): window not found
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+    focused, window active: 10 frames in 5 s (the blink, 2/s)
+    typing 10 keys at 10/s: 11 frames, the caret solid throughout, no blink frame in between
+    blurred: 0 frames in 5 s
+    focused, window inactive: 0 frames in 5 s
+selftest input-caret-idle: PASS (19879 ms)
+selftest: 7 passed, 0 failed, 0 skipped, 0 inconclusive
+decibell: ERROR [gpui::window] dispatching input for window WindowId(2v13): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(3v1): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v13): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v13): window not found
+=== exit 0 (input-typing,input-undo,input-ime,input-atoms,input-bytes-cap,input-select-filter,input-caret-idle)
+=== decibell --selftest chat-history,chat-switch,chat-resize,chat-selection,chat-rows,chat-idle,chat-hover
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest chat-history: a page above, a live message and a page mid-wheel move the row being read 0 px; the bottom follows
+decibell: INFO [decibell_model::regional] [regional] Windows user formats (M/d/yyyy): 11/7/2026 · Saturday, November 7, 2026 · 2:32 PM · first day Sun · 1,234,567.5
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::live::hotkeys] [hotkeys] configure failed: Not connected to central server
+decibell: WARN [decibell_model::live::presence::avatars] [avatars] fetch failed for uid 6: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    older page (50 rows above): row 9963 stayed at y = 31 px
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    live message while reading: row 9975 stayed at y = 105 px, the pill is up
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    page mid-wheel: 400 px exactly, 46 samples, largest step 56 px, never backwards
+selftest chat-history: PASS (5074 ms)
+selftest chat-switch: leaving a channel and coming back restores its exact position in the first frame
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v1): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v1): window not found
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    A → B → A: row 9980 at y = 173 px in the first frame and after; position (false, 9979, -236.57813)
+selftest chat-switch: PASS (2406 ms)
+selftest chat-resize: a width change keeps the row being read where it is
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v3): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v3): window not found
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    width 1020 px: row 9977 stays at y = Some(-62.0)
+    width 760 px: row 9977 stays at y = Some(-62.0)
+    width 1280 px: row 9977 stays at y = Some(-62.0)
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+selftest chat-resize: PASS (3300 ms)
+selftest chat-selection: drag across rows, autoscroll, double / triple click, Shift+click, the copied text, the scroll keys
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v5): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v5): window not found
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    drag across 11 rows copies 754 chars; the rows between are whole
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    autoscroll 40 px past the edge: 239 px in 0.4 s, 352 px in 0.6 s
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+selftest chat-selection: PASS (5868 ms)
+selftest chat-rows: every row's top and height on both fixture channels (written to $DECIBELL_CHAT_ROWS_DIR for the Electron comparison)
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v7): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v7): window not found
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    chat-fixture: 150 rows, 11453.90625 px, list 1280 × 696
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v9): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v9): window not found
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    chat-features: 35 rows, 5768.140625 px, list 1280 × 696
+selftest chat-rows: PASS (1712 ms)
+selftest chat-idle: a channel open and at rest draws no frame for 10 s
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v11): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v11): window not found
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    0 frames in 10 s; 20 moves inside one target: 1 frames; 40 moves across 300 px of rows: 1 frames, 9.9 µs per move
+selftest chat-idle: PASS (17562 ms)
+selftest chat-hover: an action's title shows after 500 ms and goes with the pointer; a right click on a message opens no menu; a live last row fades up in 300 ms, then nothing draws
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v13): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v13): window not found
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    "Reply" after 506 ms
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    the entrance: 19 frames drawn; then 0 in 1 s
+selftest chat-hover: PASS (5020 ms)
+selftest: 7 passed, 0 failed, 0 skipped, 0 inconclusive
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v15): window not found
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+=== exit 0 (chat-history,chat-switch,chat-resize,chat-selection,chat-rows,chat-idle,chat-hover)
+=== decibell --selftest input-clipboard,input-password
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest input-clipboard: cut, copy, paste through the real clipboard (restored afterwards); a non-text paste goes to the hook
+    copy, paste, cut, Shift+Insert, undo of a paste, a multi-line paste: through the real clipboard
+decibell: WARN [gpui_windows::clipboard] Failed to decode image for DIB conversion: unexpected end of file
+    an image on the clipboard went to the non-text hook, nothing was inserted
+selftest input-clipboard: PASS (850 ms)
+selftest input-password: a password is drawn as bullets, typed into normally, and never copied or cut
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v1): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v1): window not found
+    drawn as 10 bullets, value intact, copy and cut refused, no word stops
+selftest input-password: PASS (1276 ms)
+selftest: 2 passed, 0 failed, 0 skipped, 0 inconclusive
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v3): window not found
+=== exit 0 (input-clipboard,input-password)
+=== decibell --selftest hotkeys-focused,hotkeys-layout
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest hotkeys-focused: the focused fallback: a bound combo pressed in our window fires once while the listener asks for it, never when the listener sees the window's keys itself; typing into a text field presses no bare-key bind
+    armed (xwayland): Ctrl + the ş key fired toggle mute once; V held and released push to talk
+    in a text field: v typed into it and pressed nothing; Ctrl + ş and F9 still fired, once each
+    listener sees the window (x11): nothing fed from the window, so a bound combo fires once (the listener's)
+    another window took the focus: the held push to talk was released
+selftest hotkeys-focused: PASS (1061 ms)
+selftest hotkeys-layout: key events carry the physical key (GPUI patch 0012): through the dispatch, and from the X server where it can be asked
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+    dispatch: Ctrl + ş → Evdev(29) + Evdev(39) (ControlLeft + Semicolon); ı → Evdev(23) (KeyI); i → Evdev(40) (Quote); a simulated keystroke → Unknown
+    Wayland session: no way to send this window a key event without typing into the session; the X11 path is checked with WAYLAND_DISPLAY unset, the Wayland path by reading (wl_keyboard.key carries the evdev code itself) and by hand (HANDOFF)
+selftest hotkeys-layout: PASS (1022 ms)
+selftest: 2 passed, 0 failed, 0 skipped, 0 inconclusive
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v3): window not found
+=== exit 0 (hotkeys-focused,hotkeys-layout)
+=== decibell --selftest join-status-picker,join-dm-composer
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest join-status-picker: the custom status dialog opens the composer's emoji picker (emoji tab only): a pick sets the emoji and closes it; Escape closes it, the dialog stays
+decibell: INFO [decibell_model::regional] [regional] Windows user formats (M/d/yyyy): 11/7/2026 · Saturday, November 7, 2026 · 2:32 PM · first day Sun · 1,234,567.5
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::live::hotkeys] [hotkeys] configure failed: Not connected to central server
+decibell: ERROR [decibell_model::live::friends] request_friend_list: Not connected to central server
+decibell: WARN [decibell_model::live::presence::avatars] [avatars] fetch failed for uid 6: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    the dialog's emoji button opened the composer's picker (tabs: false, Emoji)
+    picked "😀": the status's emoji is "😀", the picker open: false
+    Escape: the picker open false, the dialog open true
+selftest join-status-picker: PASS (3412 ms)
+selftest join-dm-composer: a DM conversation hosts the composer crate's composer (DM variant) with its type-to-focus hook
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v1): window not found
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [decibell_model::live::friends] request_friend_list: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::actions::dm] mark_dm_read: Not connected to central server
+    the conversation hosts the composer (Dm, under its list: true)
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+    a key with nothing focused: the box holds "h", focused true
+selftest join-dm-composer: PASS (2819 ms)
+selftest: 2 passed, 0 failed, 0 skipped, 0 inconclusive
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v3): window not found
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+=== exit 0 (join-status-picker,join-dm-composer)
+=== decibell --selftest picture-editor,server-settings-narrow,server-settings-idle
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest picture-editor: the picture editor: a PNG and a sideways (EXIF 6) JPEG load upright, zoom and pan stop at their limits, Save gives the output size
+    (1600.0, 900.0): frame 535×184, scale 0.334 in [0.204, 2.675]
+    zoom stops at 2.675 and 0.204; panning stays inside
+    saved a 880×303 JPEG (23125 bytes); the editor closed
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v1): window not found
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+    (200.0, 400.0): frame 256×256, scale 1.280 in [1.280, 10.240]
+    zoom stops at 10.240 and 1.280; panning stays inside
+    saved a 256×256 JPEG (3213 bytes); the editor closed
+selftest picture-editor: PASS (11658 ms)
+selftest server-settings-narrow: Server and Channel Settings below 1024 px fold the sidebar into the rail; above, the full sidebar
+decibell: INFO [decibell_model::regional] [regional] Windows user formats (M/d/yyyy): 11/7/2026 · Saturday, November 7, 2026 · 2:32 PM · first day Sun · 1,234,567.5
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v3): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v3): window not found
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+decibell: ERROR [decibell_model::live::hotkeys] [hotkeys] configure failed: Not connected to central server
+decibell: ERROR [decibell_model::live::friends] request_friend_list: Not connected to central server
+decibell: WARN [decibell_model::live::presence::avatars] [avatars] fetch failed for uid 6: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+    900 px wide: the pane starts 81 px in, 802 px wide
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v5): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v5): window not found
+decibell: ERROR [decibell_model::live::friends] request_friend_list: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    1280 px wide: the pane starts 305 px in, 910 px wide
+selftest server-settings-narrow: PASS (3789 ms)
+selftest server-settings-idle: every Server Settings tab settles to 0 frames over 5 s; closing drops the window and its state
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v7): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v7): window not found
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+decibell: ERROR [decibell_model::live::friends] request_friend_list: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+    Overview: not idle in a try (1 drawn, 110 presented in 5 s); measuring again
+decibell: ERROR [decibell_model::live::friends] request_friend_list: Not connected to central server
+    Overview: 0 frames drawn over 5 s (109 presented)
+    Members: 0 frames drawn over 5 s (122 presented)
+decibell: ERROR [decibell_model::live::friends] request_friend_list: Not connected to central server
+    Roles: 0 frames drawn over 5 s (117 presented)
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+    Audit Log: 0 frames drawn over 5 s (122 presented)
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    Bans: 0 frames drawn over 5 s (122 presented)
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    Storage: 0 frames drawn over 5 s (123 presented)
+    closed: the window and its tab are gone
+selftest server-settings-idle: PASS (44059 ms)
+selftest: 3 passed, 0 failed, 0 skipped, 0 inconclusive
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v9): window not found
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+=== exit 0 (picture-editor,server-settings-narrow,server-settings-idle)
+=== decibell --selftest content-scroll-fixture,content-rows
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest content-scroll-fixture: 240 picture rows (memory fetcher, 20 ms answers, real decodes off the UI thread) scrolled at 3000 px/s: frame intervals and missed frames
+    │ decibell: platform idle source windows
+    │ decibell: platform instance listening
+    │ selftest content-scroll-fixture: (in the app)
+    │ decibell: signed-in perf1
+    │ decibell: connected Rustaceans
+    │ decibell: connected Design Lab
+    │ decibell: connected Daily Gaming
+    │ decibell: platform window-state saved 1280x800
+    │     the newest screen: 7 pictures in, 2412 KB decoded (scale 1)
+    │     50 picture rows, 3000 px/s for 12 s: 675 frames, interval p50 15.92 / p99 32.21 ms, 84 missed vsyncs, 82 late, rows laid out 102
+    │     pictures during the run: 123 decoded (mean 22416 µs off the UI thread), 122 first paints (mean 146 µs on it), 0 cancelled, 62 evicted; decoded 30592 KB, encoded 2292 KB at the end
+    │ selftest content-scroll-fixture: PASS (167078 ms)
+    │ decibell: platform quit: downloads paused
+selftest content-scroll-fixture: PASS (167628 ms)
+selftest content-rows: every row's top and height on the content fixture channels (written to $DECIBELL_CHAT_ROWS_DIR for the Electron comparison)
+    │ decibell: platform idle source windows
+    │ decibell: platform instance listening
+    │ selftest content-rows: (in the app)
+    │ decibell: signed-in perf1
+    │ decibell: connected Daily Gaming
+    │ decibell: connected Design Lab
+    │ decibell: connected Rustaceans
+    │ decibell: platform window-state saved 1280x800
+    │     content-attachments-tall: 10 rows, 3464.359375 px, list 1280 × 696
+    │     content-embeds-tall: 9 rows, 2249.703125 px, list 1280 × 696
+    │ selftest content-rows: PASS (2196 ms)
+    │ decibell: platform quit: downloads paused
+selftest content-rows: PASS (2697 ms)
+selftest: 2 passed, 0 failed, 0 skipped, 0 inconclusive
+=== exit 0 (content-scroll-fixture,content-rows)
+=== decibell --selftest profile-guard,single-instance,deep-link-arg,hotkey-cli
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest profile-guard: a development build's default profile is ~/.cache/decibell-dev/gpui-default and it refuses the shipped one (app and decibell-headless)
+    the app without DECIBELL_USER_DATA_DIR: C:\Users\RUNNER~1\AppData\Local\Temp\decibell-platform-profile-guard-8048-201985100\home\AppData\Local\decibell-dev\gpui-default (HOME=C:\Users\RUNNER~1\AppData\Local\Temp\decibell-platform-profile-guard-8048-201985100\home)
+    pointed at the shipped profile: refused (exit 2), nothing created
+    decibell-headless is not built beside this binary: its default not checked
+selftest profile-guard: PASS (584 ms)
+selftest single-instance: a second start on the same profile hands over and exits; the first comes forward; two profiles run side by side
+    second start: exited 0 after 62 ms (decibell: platform forwarded in 0 ms)
+    a: active true
+    no KWin: the activation was requested (marker), not checked with the compositor
+    another profile: its own instance, side by side with the first
+selftest single-instance: PASS (1606 ms)
+selftest deep-link-arg: decibell://invite/… on the first start is the pending invite before (and after) sign-in; a second start's replaces it
+    the local stack is down: the link is checked before sign-in only
+    first start: first PLATFORMA1 (signed in: false)
+    second start: forwarded PLATFORMB2
+selftest deep-link-arg: PASS (585 ms)
+selftest hotkey-cli: --hotkey=<action> with nothing running exits; with an instance running it fires there and exits
+    nothing running: exited 0 after 58 ms without starting ("decibell: --hotkey: Decibell isn't running (nothing to send the keybind to)")
+    --hotkey=toggle_mute: the second start exited after 59 ms; the instance: decibell: platform hotkey toggle_mute injected
+    --hotkey=toggle_mute: the second start exited after 62 ms; the instance: decibell: platform hotkey toggle_mute injected
+    --hotkey=push_to_talk:down: the second start exited after 62 ms; the instance: decibell: platform hotkey push_to_talk:down injected
+    --hotkey=push_to_talk:up: the second start exited after 63 ms; the instance: decibell: platform hotkey push_to_talk:up injected
+    the instance ran them: cues [Play(Mute), Play(Unmute)]
+selftest hotkey-cli: PASS (887 ms)
+selftest: 4 passed, 0 failed, 0 skipped, 0 inconclusive
+=== exit 0 (profile-guard,single-instance,deep-link-arg,hotkey-cli)
+=== decibell --selftest render-cost,encoder-software
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest render-cost: what one change costs in views rendered and main-thread time, with nested cached views replayed (GPUI patch 0014) and as GPUI was
+decibell: INFO [decibell_model::regional] [regional] Windows user formats (M/d/yyyy): 11/7/2026 · Saturday, November 7, 2026 · 2:32 PM · first day Sun · 1,234,567.5
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::live::hotkeys] [hotkeys] configure failed: Not connected to central server
+decibell: ERROR [decibell_model::live::friends] request_friend_list: Not connected to central server
+decibell: WARN [decibell_model::live::presence::avatars] [avatars] fetch failed for uid 6: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::friends] request_friend_list: Not connected to central server
+    a speaking ring on a 12-tile stage: per change, as GPUI was: 18.0 views rendered, 0.0 replayed, 0 µs of main thread (1.00 frames); with 0014: 5.0 rendered, 13.0 replayed, 0 µs (1.00 frames)
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v1): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v1): window not found
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+decibell: ERROR [decibell_model::live::friends] request_friend_list: Not connected to central server
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+decibell: ERROR [decibell_model::actions::chat] history request: Not connected to central server
+decibell: ERROR [decibell_model::live::friends] request_friend_list: Not connected to central server
+    a speaking ring in the channel list (text channel open, members shown): per change, as GPUI was: 9.0 views rendered, 0.0 replayed, 0 µs of main thread (1.00 frames); with 0014: 3.0 rendered, 3.0 replayed, 0 µs (1.00 frames)
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [gpui::window] handling hover status change for window WindowId(2v3): window not found
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v3): window not found
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    a key typed in a field under the message list: per change, as GPUI was: 3.0 views rendered, 0.0 replayed, 0 µs of main thread (1.00 frames); with 0014: 2.0 rendered, 1.0 replayed, 0 µs (1.00 frames)
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    a message arriving in the open channel (a field under it): per change, as GPUI was: 8.0 views rendered, 0.0 replayed, 0 µs of main thread (2.67 frames); with 0014: 5.5 rendered, 2.6 replayed, 0 µs (2.68 frames)
+selftest render-cost: PASS (61838 ms)
+selftest encoder-software: the software fallback is in this binary: SVT-AV1 encodes, a requested key frame comes, dav1d decodes every frame back
+Svt[info]: -------------------------------------------
+Svt[info]: SVT [version]:	SVT-AV1 Encoder Lib v4.2.0
+Svt[info]: SVT [build]  :	Visual Studio 2026 64 bit
+Svt[info]: -------------------------------------------
+Svt[warn]: Maximum bit rate only supported with tpl on. max bit rate 0 is used instead.
+Svt[warn]: Screen-content detection and tools are disabled for RA mode coding at M9 and above; forcing NSC path
+Svt[warn]: The initial buffer size must be less than maximum buffer size. Defaulting optimal buffer size to maximum buffer size - 1 (132)
+Svt[warn]: The optimal buffer size must be less than maximum buffer size. Defaulting optimal buffer size to maximum buffer size - 1 (132)
+Svt[warn]: Non-RTC M10+ are meant for automation tooling usage. Visual artifacts may occur otherwise.
+Svt[warn]: TPL is disabled in low delay applications.
+Svt[info]: Level of Parallelism: 3
+Svt[info]: Number of PPCS 1
+Svt[info]: [asm level on system : up to avx2]
+Svt[info]: [asm level selected : up to avx2]
+Svt[info]: -------------------------------------------
+Svt[info]: SVT [config]: main profile	tier (auto)	level (auto)
+Svt[info]: SVT [config]: width / height / fps numerator / fps denominator 		: 640 / 360 / 30 / 1
+Svt[info]: SVT [config]: bit-depth / color format 					: 8 / YUV420
+Svt[info]: SVT [config]: preset / tune / pred struct 					: 10 / PSNR / low delay
+Svt[info]: SVT [config]: gop size / mini-gop size / key-frame type 			: 60 / 4 / key frame
+Svt[info]: SVT [config]: BRC mode / target bitrate (kbps)				: CBR / 1500
+Svt[info]: SVT [config]: sharpness / luminance-based QP bias 				: 0 / 0
+Svt[info]: SVT [config]: QP scale compress strength 					: 0
+Svt[info]: -------------------------------------------
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v5): window not found
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [gpui_windows::platform] Invalid window handle. (0x80070578)
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: INFO [decibell_video::hub] video: stream selftest-encoder-software: software decoder for AV1 opened in 0.8 ms
+decibell: INFO [decibell_video::hub] video: stream selftest-encoder-software: DecoderOpened { codec: Av1, path: Software, backend: Software }
+decibell: INFO [decibell_video::hub] video: stream selftest-encoder-software: Picture { width: 640, height: 360 }
+    libsvtav1 640x360@30 1500 kbps: opened in 10 ms, 30 packets, key frames at [0, 15] (frame 15 requested), 859 kbps
+    decoded in software (software): 30/30 pictures, each matched to its frame by its barcode, 0 errors; 309 ms in all
+selftest encoder-software: PASS (345 ms)
+selftest: 2 passed, 0 failed, 0 skipped, 0 inconclusive
+=== exit 0 (render-cost,encoder-software)
+=== decibell --selftest chat-scroll-spec
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest chat-scroll-spec: wheel notches and keys through the real element follow docs/wheel-scroll.md's model
+decibell: INFO [decibell_model::regional] [regional] Windows user formats (M/d/yyyy): 11/7/2026 · Saturday, November 7, 2026 · 2:32 PM · first day Sun · 1,234,567.5
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::events::chat] get_attachment_target: Not connected to central server
+decibell: ERROR [decibell_model::actions::servers] list_members: Not connected to central server
+decibell: ERROR [decibell_model::live::hotkeys] [hotkeys] configure failed: Not connected to central server
+decibell: WARN [decibell_model::live::presence::avatars] [avatars] fetch failed for uid 6: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    W1 one notch down: 13 frames on the model's curve (worst 0.000 px), 119.99999682108546 px in all
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    W2 one notch up: 14 frames on the model's curve (worst 0.000 px), -119.99999682108569 px in all
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    W3 two notches 60 ms apart: 16 frames on the model's curve (worst 0.000 px), 239.99999364217092 px in all
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    W4 three notches 30 ms apart: 14 frames on the model's curve (worst 0.000 px), 359.9999904632564 px in all
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+    W6 reversal: 14 frames on the model's curve (worst 0.000 px), -0.00000000000022737367544323206 px in all
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+selftest chat-scroll-spec: FAIL (8999 ms): K1 ArrowDown: only 7 frames were drawn
+selftest: 0 passed, 1 failed, 0 skipped, 0 inconclusive
+decibell: ERROR [gpui::window] handling active status change for window WindowId(2v1): window not found
+decibell: ERROR [decibell_model::live::presence::interest] presence_subscribe: Not connected to central server
+=== exit 1 (chat-scroll-spec)
+=== allowed to fail (chat-scroll-spec): counts the frames of a wheel glide: the runner (a debug build on WARP) drew 9 and 8 where the test wants more (runs on f31e8f9 and 99f9645), after passing once on 95b52d4. A frame count on a software renderer is the runner's speed, not the client's: it stays here until the test bounds the glide by time and position instead
+=== decibell --selftest window-state
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest window-state: resize, quit, start: the same size; maximised comes back maximised; a place off every screen is dropped (X11)
+    windows: resized (now 1000x700 windowed (saved as 1000x700 windowed)) → quit → saved 1000x700
+    windows: started at 1000x700 windowed; maximised → quit → saved maximised (restore 1000x700)
+    windows: opened maximized; restored 1000x700 windowed
+    windows: saved at 100000,100000 → opened at 460,162 on screen
+selftest window-state: PASS (4828 ms)
+selftest: 1 passed, 0 failed, 0 skipped, 0 inconclusive
+=== exit 0 (window-state)
+=== decibell --selftest attention,taskbar-progress,keyring-label
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+selftest attention: an incoming call (a headless peer) flashes the unfocused window, as KWin reports; not under Do Not Disturb
+    SKIP: the local stack is down (tools/dev/local-stack.sh up)
+selftest attention: SKIP (0 ms): the local stack is down (tools/dev/local-stack.sh up)
+selftest taskbar-progress: a download's progress as LauncherEntry signals on a private bus (values, pause, clear); closing with an upload asks
+    SKIP: the launcher entry is Linux's
+selftest taskbar-progress: SKIP (0 ms): the launcher entry is Linux's
+selftest keyring-label: credentials are stored, read and deleted under the label Decibell (a throwaway gnome-keyring on a private bus; never the session's keyring)
+    SKIP: the Secret Service is Linux's
+selftest keyring-label: SKIP (0 ms): the Secret Service is Linux's
+selftest: 0 passed, 0 failed, 3 skipped, 0 inconclusive
+=== exit 0 (attention,taskbar-progress,keyring-label)
+=== decibell --selftest boot (GPUI_DISABLE_DIRECT_COMPOSITION=1)
+decibell: INFO [gpui_windows::direct_write] Use Segoe UI as UI font.
+decibell: INFO [gpui_windows::directx_devices] Using GPU: Microsoft Basic Render Driver
+decibell: INFO [gpui_windows::directx_devices] Created device with Direct3D 11.1 feature level.
+decibell: INFO [gpui_windows::directx_renderer] Direct Composition is disabled.
+selftest boot: the window opens, a first frame is presented, every bundled face resolves
+    first frame presented 483.3 ms after start
+    window 1280×800 at scale 1, Server
+    17 bundled faces resolve: 13 identified by their metrics, 4 as distinct faces
+selftest boot: PASS (36 ms)
+selftest: 1 passed, 0 failed, 0 skipped, 0 inconclusive
+=== exit 0 (boot, no DirectComposition)
+=== summary
+selftest boot: PASS (66 ms)
+=== exit 0 (boot)
+selftest idle-frames: PASS (5312 ms)
+=== exit 0 (idle-frames)
+selftest themes: PASS (5238 ms)
+selftest window-frame: PASS (0 ms)
+=== exit 0 (themes,window-frame)
+selftest video-probe: PASS (2175 ms)
+=== exit 0 (video-probe)
+selftest kit-idle: PASS (27600 ms)
+selftest kit-switch: PASS (4698 ms)
+selftest kit-select: PASS (6125 ms)
+selftest kit-modal: PASS (7506 ms)
+selftest kit-confirm: PASS (4005 ms)
+selftest kit-scroll: PASS (10872 ms)
+selftest kit-toast: PASS (4838 ms)
+=== exit 0 (kit-idle,kit-switch,kit-select,kit-modal,kit-confirm,kit-scroll,kit-toast)
+selftest input-typing: PASS (9850 ms)
+selftest input-undo: PASS (2080 ms)
+selftest input-ime: PASS (3049 ms)
+selftest input-atoms: PASS (2676 ms)
+selftest input-bytes-cap: PASS (829 ms)
+selftest input-select-filter: PASS (5328 ms)
+selftest input-caret-idle: PASS (19879 ms)
+=== exit 0 (input-typing,input-undo,input-ime,input-atoms,input-bytes-cap,input-select-filter,input-caret-idle)
+selftest chat-history: PASS (5074 ms)
+selftest chat-switch: PASS (2406 ms)
+selftest chat-resize: PASS (3300 ms)
+selftest chat-selection: PASS (5868 ms)
+selftest chat-rows: PASS (1712 ms)
+selftest chat-idle: PASS (17562 ms)
+selftest chat-hover: PASS (5020 ms)
+=== exit 0 (chat-history,chat-switch,chat-resize,chat-selection,chat-rows,chat-idle,chat-hover)
+selftest input-clipboard: PASS (850 ms)
+selftest input-password: PASS (1276 ms)
+=== exit 0 (input-clipboard,input-password)
+selftest hotkeys-focused: PASS (1061 ms)
+selftest hotkeys-layout: PASS (1022 ms)
+=== exit 0 (hotkeys-focused,hotkeys-layout)
+selftest join-status-picker: PASS (3412 ms)
+selftest join-dm-composer: PASS (2819 ms)
+=== exit 0 (join-status-picker,join-dm-composer)
+selftest picture-editor: PASS (11658 ms)
+selftest server-settings-narrow: PASS (3789 ms)
+selftest server-settings-idle: PASS (44059 ms)
+=== exit 0 (picture-editor,server-settings-narrow,server-settings-idle)
+selftest content-scroll-fixture: PASS (167628 ms)
+selftest content-rows: PASS (2697 ms)
+=== exit 0 (content-scroll-fixture,content-rows)
+selftest profile-guard: PASS (584 ms)
+selftest single-instance: PASS (1606 ms)
+selftest deep-link-arg: PASS (585 ms)
+selftest hotkey-cli: PASS (887 ms)
+=== exit 0 (profile-guard,single-instance,deep-link-arg,hotkey-cli)
+selftest render-cost: PASS (61838 ms)
+selftest encoder-software: PASS (345 ms)
+=== exit 0 (render-cost,encoder-software)
+selftest chat-scroll-spec: FAIL (8999 ms): K1 ArrowDown: only 7 frames were drawn
+=== exit 1 (chat-scroll-spec)
+=== allowed to fail (chat-scroll-spec): counts the frames of a wheel glide: the runner (a debug build on WARP) drew 9 and 8 where the test wants more (runs on f31e8f9 and 99f9645), after passing once on 95b52d4. A frame count on a software renderer is the runner's speed, not the client's: it stays here until the test bounds the glide by time and position instead
+selftest window-state: PASS (4828 ms)
+=== exit 0 (window-state)
+selftest attention: SKIP (0 ms): the local stack is down (tools/dev/local-stack.sh up)
+selftest taskbar-progress: SKIP (0 ms): the launcher entry is Linux's
+selftest keyring-label: SKIP (0 ms): the Secret Service is Linux's
+=== exit 0 (attention,taskbar-progress,keyring-label)
+selftest boot: PASS (36 ms)
+=== exit 0 (boot, no DirectComposition)
+=== PASS: 45
+=== FAIL: 1
+=== SKIP: 3
+=== INCONCLUSIVE: 0

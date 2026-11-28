@@ -1,0 +1,746 @@
+=== cargo test -p decibell-theme
+[1m[92m   Compiling[0m decibell-theme v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-theme)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 0.97s
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\build\decibell-theme/dee6262be582f832\out\decibell_theme-dee6262be582f832.exe)
+
+running 17 tests
+test tests::color_conversions ... ok
+test tests::console_light_spot_checks ... ok
+test tests::console_split_spot_checks ... ok
+test generated_tests::scaled_matches_the_css_at_every_step ... ok
+test tests::console_spot_checks ... ok
+test tests::css_round_semantics ... ok
+test tests::generated_color_mix_agrees_with_color_mix ... ok
+test tests::every_theme_resolves_every_field ... ok
+test tests::graphite_light_spot_checks ... ok
+test tests::graphite_spot_checks ... ok
+test tests::matinee_spot_checks ... ok
+test tests::modes_agree_with_the_canvas ... ok
+test tests::nocturne_spot_checks ... ok
+test tests::scaled_at_the_default_and_the_extremes ... ok
+test tests::scope_spot_checks ... ok
+test tests::settings_clamps_follow_ui_store ... ok
+test tests::theme_ids_match_the_generated_tables ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m decibell_theme
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== cargo test -p decibell-highlight
+[1m[92m   Compiling[0m regress v0.12.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-highlight\vendor\regress)
+[1m[92m   Compiling[0m decibell-highlight v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-highlight)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 5.10s
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\build\decibell-highlight/c4bfd11c013f08ce\out\decibell_highlight-c4bfd11c013f08ce.exe)
+
+running 7 tests
+test callbacks::tests::js_space ... ok
+test callbacks::tests::end_same_as_begin_undefined_groups ... ok
+test callbacks::tests::php_heredoc_begin ... ok
+test callbacks::tests::end_same_as_begin ... ok
+test callbacks::tests::shebang_at_start ... ok
+test callbacks::tests::js_is_truly_opening_tag ... ok
+test callbacks::tests::skip_if_has_preceding_dot ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\differential.rs (target\debug\build\decibell-highlight/9531df8ad857dc6b\out\differential-9531df8ad857dc6b.exe)
+
+running 3 tests
+test full_fuzz_matches_lowlight ... ok
+test corpus_matches_lowlight ... ok
+test fuzz_matches_lowlight ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.68s
+
+[1m[92m     Running[0m tests\engine.rs (target\debug\build\decibell-highlight/d7497c9f9d3d3026\out\engine-d7497c9f9d3d3026.exe)
+
+running 18 tests
+test a_boundary_inside_a_surrogate_pair_snaps_to_the_character ... ok
+test byte_ranges_with_wide_characters ... ok
+test colour_table_matches_the_renderer_stylesheet ... ok
+test every_styled_class_can_be_emitted_or_is_known_unused ... ok
+test highlight_language_is_the_same_as_by_name ... ok
+test budget_fallbacks_are_plain_text ... ok
+test joined_regexes_equal_highlight_js ... ok
+test keyword_pattern_decides_what_a_word_is ... ok
+test keywords_follow_the_language_case_rule ... ok
+test language_names_and_aliases ... ok
+test relevance_matches_highlight_js ... ok
+test spans_carry_colour_italic_and_path ... ok
+test step_budget_is_deterministic_and_tight ... ok
+test unknown_or_missing_language_is_plain_text ... ok
+test unstyled_scopes_inherit_the_enclosing_colour ... ok
+test html_picks_the_same_sub_languages_as_highlight_js ... ok
+test budget_stops_a_sub_language_too ... ok
+test every_grammar_regex_compiles ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.75s
+
+[1m[92m   Doc-tests[0m decibell_highlight
+
+running 1 test
+test crates\decibell-highlight\src\lib.rs - (line 11) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+=== cargo test -p decibell-tex
+[1m[92m   Compiling[0m decibell-tex v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-tex)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 6.23s
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\build\decibell-tex/082e51b3ea2ee72f\out\decibell_tex-082e51b3ea2ee72f.exe)
+
+running 15 tests
+test delimiter::tests::js_math_round ... ok
+test lexer::tests::tokens ... ok
+test environments::array::tests::parse_float_like_js ... ok
+test parser::tests::size_regexes ... ok
+test svg_geometry::tests::paths_sorted ... ok
+test symbols::tests::tables_sorted ... ok
+test unicode_accents::tests::lookups ... ok
+test unicode_scripts::tests::scripts ... ok
+test unicode_sup_or_sub::tests::lookups ... ok
+test functions::tests::table_is_current ... ok
+test unicode_symbols::tests::lookups ... ok
+test utils::tests::js_number_formatting ... ok
+test utils::tests::to_fixed_rounding ... ok
+test svg_geometry::tests::parametric_paths_match_katex ... ok
+test wide_character::tests::fonts ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\adversarial.rs (target\debug\build\decibell-tex/7edb97c1395c7d13\out\adversarial-7edb97c1395c7d13.exe)
+
+running 2 tests
+test everyday_api ... ok
+test adversarial_inputs_are_bounded ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+
+[1m[92m     Running[0m tests\layout.rs (target\debug\build\decibell-tex/e9a679fddf7d4883\out\layout-e9a679fddf7d4883.exe)
+
+running 1 test
+test layout_matches_chromium ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s
+
+[1m[92m     Running[0m tests\markup.rs (target\debug\build\decibell-tex/e2540bffb6e734ea\out\markup-e2540bffb6e734ea.exe)
+
+running 1 test
+test markup_matches_katex ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+[1m[92m   Doc-tests[0m decibell_tex
+
+running 1 test
+test crates\decibell-tex\src\lib.rs - (line 12) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+all doctests ran in 0.46s; merged doctests compilation took 0.43s
+=== cargo test -p decibell-richtext
+[1m[92m   Compiling[0m decibell-richtext v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-richtext)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 2.66s
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\build\decibell-richtext/66265869ce3d7d99\out\decibell_richtext-66265869ce3d7d99.exe)
+
+running 3 tests
+test emoji::tests::basics ... ok
+test plain::tests::copies_as_the_electron_clipboard_holds_them ... ok
+test emoji::tests::the_shortcode_of_an_emoji ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\differential.rs (target\debug\build\decibell-richtext/41cc99b0d3e2ee23\out\differential-41cc99b0d3e2ee23.exe)
+
+running 7 tests
+test edge_and_url_suites ... ok
+test emoji_suite ... ok
+test stress ... ignored
+test matrix_suite ... ok
+test fixture_suite ... ok
+test url_fuzz_suite ... ok
+test fuzz_suite ... ok
+
+test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 4.17s
+
+[1m[92m     Running[0m tests\host_sweep.rs (target\debug\build\decibell-richtext/a596837ae1254757\out\host_sweep-a596837ae1254757.exe)
+
+running 1 test
+test host_sweep ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.57s
+
+[1m[92m     Running[0m tests\properties.rs (target\debug\build\decibell-richtext/4d64cc439b3e8668\out\properties-4d64cc439b3e8668.exe)
+
+running 3 tests
+test budget_option ... ok
+test unmarked_text ... ok
+test span_invariants ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.86s
+
+[1m[92m   Doc-tests[0m decibell_richtext
+
+running 1 test
+test crates\decibell-richtext\src\lib.rs - (line 33) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s
+
+=== cargo test -p decibell-attachments
+[1m[92m   Compiling[0m decibell-attachments v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-attachments)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 13.07s
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\build\decibell-attachments/3c42954916a0c7a0\out\decibell_attachments-3c42954916a0c7a0.exe)
+
+running 21 tests
+test crypto::tests::sizes_and_offsets ... ok
+test error::tests::upload_refusals_read_as_the_renderer_writes_them ... ok
+test crypto::tests::ranges ... ok
+test kind::tests::mime_and_kind ... ok
+test media::tests::budget_keeps_most_recent ... ok
+test names::tests::extname_like_node ... ok
+test names::tests::sanitize_table ... ok
+test pacer::tests::chunk_sizes ... ok
+test pacer::tests::idle_buckets_are_pruned ... ok
+test names::tests::unique_and_risky ... ok
+test thumbhash::tests::js_round_matches_math_round ... ok
+test thumbhash::tests::roundtrip_shape ... ok
+test crypto::tests::seal_open_roundtrip_and_tamper ... ok
+test pacer::tests::pacer_cancels ... ok
+test thumbs::tests::dims_follow_the_renderer ... ok
+test thumbs::tests::exif_orientation_is_applied ... ok
+test thumbs::tests::animated_gif_gives_its_first_frame ... ok
+test thumbs::tests::thumbnail_choice ... ok
+test thumbs::tests::a_poster_smaller_than_the_video ... ok
+test thumbs::tests::facts_of_a_picture ... ok
+test pacer::tests::pacer_holds_the_rate ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.99s
+
+[1m[92m     Running[0m tests\bigfile.rs (target\debug\build\decibell-attachments/131e09ef1988f3d1\out\bigfile-131e09ef1988f3d1.exe)
+
+running 2 tests
+test client_side ... ignored
+test big_sealed_transfer_streams ... ok
+
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\stack.rs (target\debug\build\decibell-attachments/b7b159df8ddc3754\out\stack-b7b159df8ddc3754.exe)
+
+running 1 test
+test local_stack_round_trip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\transfers.rs (target\debug\build\decibell-attachments/e997c872e9c09366\out\transfers-e997c872e9c09366.exe)
+
+running 12 tests
+test image_cache_shares_and_bounds ... ok
+test manager_downloads_pauses_resumes_and_persists ... ok
+test pinned_to_the_fingerprint ... ok
+test download_cap_and_media_reader ... ok
+test manager_sealed_failures_and_odd_servers ... ok
+test plain_upload_with_thumbnails_and_reuse ... ok
+test sealed_thumbnails_and_fallback_size ... ok
+test sealed_upload_roundtrip ... ok
+test resumes_from_the_servers_offset_after_a_cut ... ok
+test cancel_and_pause ... ok
+test upload_speed_cap_holds ... ok
+test server_refusals_map_to_errors ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 22.14s
+
+[1m[92m     Running[0m tests\vectors.rs (target\debug\build\decibell-attachments/2228931fc621c6ab\out\vectors-2228931fc621c6ab.exe)
+
+running 7 tests
+test range_plans_match_main ... ok
+test big_vectors_both_ways_and_streamed_ranges ... ok
+test rust_opens_the_committed_renderer_files ... ok
+test thumbnails_match_both_ways ... ok
+test thumbhash_is_bit_identical ... ok
+test thumbhash_fuzz_is_bit_identical ... ok
+test rust_sealing_is_byte_identical_to_the_renderer ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+[1m[92m   Doc-tests[0m decibell_attachments
+
+running 1 test
+test crates\decibell-attachments\src\lib.rs - (line 20) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== cargo test -p decibell-unfurl
+[1m[92m   Compiling[0m decibell-unfurl v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-unfurl)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 6.08s
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\build\decibell-unfurl/b78044b8253f787a\out\decibell_unfurl-b78044b8253f787a.exe)
+
+running 55 tests
+test api_tests::public_types_are_send_sync ... ok
+test http::tests::collector_marker_and_limit ... ok
+test http::tests::host_and_target ... ok
+test http::tests::happy_eyeballs_order ... ok
+test images::tests::only_https_is_fetched ... ok
+test images::tests::only_web_pictures_and_http_is_upgraded ... ok
+test http::tests::decoders ... ok
+test js::tests::encode_uri_component_matches_js ... ok
+test images::tests::the_shared_fetch_refuses_private_destinations ... ok
+test images::tests::private_addresses_are_refused ... ok
+test js::tests::parse_int_matches_js ... ok
+test js::tests::number_to_string_matches_js ... ok
+test js::tests::trims_js_whitespace_only ... ok
+test js::tests::utf16_slicing ... ok
+test link_preview::extract::tests::colors_and_types ... ok
+test link_preview::extract::tests::cleaning ... ok
+test link_preview::extract::tests::entities ... ok
+test link_preview::extract::tests::attributes ... ok
+test link_preview::extract::tests::to_int_cases ... ok
+test link_preview::probe::tests::png_gif_webp_jpeg ... ok
+test links::tests::external ... ok
+test link_preview::extract::tests::tags_need_a_word_boundary ... ok
+test links::tests::media ... ok
+test public_net::tests::every_v4_range_is_refused_at_both_ends ... ok
+test public_net::tests::every_v6_range_is_refused_at_both_ends ... ok
+test public_net::tests::loopback_relaxation_is_narrow ... ok
+test public_net::tests::named_addresses ... ok
+test public_net::tests::names_resolving_to_private_addresses_are_refused ... ok
+test public_net::tests::url_checks ... ok
+test links::tests::invites ... ok
+test tests::loopback::bodies_that_cannot_matter_are_not_read ... ok
+test tests::loopback::cache_drops_its_oldest_quarter_when_full ... ok
+test http::tests::decompression_bomb_stays_bounded ... ok
+test tests::loopback::concurrent_requests_for_one_url_share_one_fetch ... ok
+test tests::loopback::a_caller_that_goes_away_still_fills_the_cache ... ok
+test tests::loopback::https_by_ip_and_by_name ... ok
+test tests::loopback::names_are_resolved_once_and_every_answer_checked ... ok
+test tests::loopback::at_most_four_unfurls_run_at_once ... ok
+test tests::loopback::production_client_refuses_loopback ... ok
+test tests::loopback::pipeline_matches_the_ts ... ok
+test tests::loopback::remote_images_follow_redirects_within_the_guard_and_the_cap ... ok
+test tests::loopback::each_request_has_a_deadline ... ok
+test tests::loopback::sends_electrons_request_headers ... ok
+test tests::vectors::gif_config_loads_like_the_ts ... ok
+test tests::vectors::gif_helpers_match_the_ts ... ok
+test tests::vectors::gif_requests_and_answers_match_the_ts ... ok
+test tests::vectors::guard_checks_urls_like_assert_allowed ... ok
+test tests::vectors::guard_classifies_addresses_like_blocklist ... ok
+test tests::vectors::image_probe_matches_the_ts ... ok
+test tests::vectors::links_match_the_ts ... ok
+test tests::vectors::pages_decode_and_parse_like_the_ts ... ok
+test tests::vectors::text_helpers_match_the_ts ... ok
+test tests::loopback::reads_stop_at_the_caps ... ok
+test tests::loopback::results_are_cached_and_expire_on_access ... ok
+test tests::loopback::gif_search_end_to_end ... ok
+
+test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.68s
+
+[1m[92m     Running[0m tests\live.rs (target\debug\build\decibell-unfurl/df1ab36c293b0c1e\out\live-df1ab36c293b0c1e.exe)
+
+running 2 tests
+test klipy_or_giphy_search_for_cat ... ignored, network; spends one request of the GIF key's quota
+test unfurls_a_public_page_over_real_tls ... ignored, network
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m decibell_unfurl
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== cargo test -p decibell-harness
+[1m[92m   Compiling[0m gpui_util v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\gpui_util)
+[1m[92m   Compiling[0m ztracing v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\ztracing)
+[1m[92m   Compiling[0m derive_refineable v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\refineable\derive_refineable)
+[1m[92m   Compiling[0m gpui v0.2.2 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\gpui)
+[1m[92m   Compiling[0m sum_tree v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\sum_tree)
+[1m[92m   Compiling[0m collections v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\collections)
+[1m[92m   Compiling[0m scheduler v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\scheduler)
+[1m[92m   Compiling[0m gpui_shared_string v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\gpui_shared_string)
+[1m[92m   Compiling[0m http_client v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\http_client)
+[1m[92m   Compiling[0m gpui_macros v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\gpui_macros)
+[1m[92m   Compiling[0m refineable v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\refineable)
+[1m[92m   Compiling[0m decibell-harness v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-harness)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 1m 08s
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\build\decibell-harness/48b6d9936b243b96\out\decibell_harness-48b6d9936b243b96.exe)
+
+running 2 tests
+test selftest::skip_tests::a_test_that_says_it_skipped_is_heard ... ok
+test test_audio::tests::a_process_streams_are_found_by_pid_and_named ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\nested_cached_views.rs (target\debug\build\decibell-harness/fd5c62dcdd4112e1\out\nested_cached_views-fd5c62dcdd4112e1.exe)
+
+running 4 tests
+test a_view_that_was_not_drawn_in_the_last_frame_renders ... ok
+test a_clean_view_nested_in_a_dirty_one_is_replayed ... ok
+test a_nested_view_whose_place_or_inherited_style_changed_renders ... ok
+test nested_views_follow_a_replayed_ancestor_to_where_it_landed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+[1m[92m   Doc-tests[0m decibell_harness
+
+running 1 test
+test crates\decibell-harness\src\selftest.rs - selftest::SelfTest (line 16) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.31s; merged doctests compilation took 0.29s
+=== cargo test -p decibell-text
+[1m[92m   Compiling[0m decibell-text v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-text)
+[1m[92m   Compiling[0m http_client v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\http_client)
+[1m[92m   Compiling[0m regress v0.12.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-highlight\vendor\regress)
+[1m[92m   Compiling[0m decibell-richtext v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-richtext)
+[1m[92m   Compiling[0m gpui v0.2.2 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\gpui)
+[1m[92m   Compiling[0m decibell-highlight v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-highlight)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 1m 02s
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\build\decibell-text/5ab58e9e32a5f81b\out\decibell_text-5ab58e9e32a5f81b.exe)
+
+running 25 tests
+test input::boundaries::tests::floor_lands_on_a_cluster_start ... ok
+test input::boundaries::tests::backspace_takes_a_code_point_or_a_whole_emoji ... ok
+test input::boundaries::tests::double_click_words_and_lines ... ok
+test input::boundaries::tests::graphemes_are_one_step ... ok
+test input::boundaries::tests::utf16_round_trips ... ok
+test input::boundaries::tests::words_stop_where_chromium_stops ... ok
+test input::buffer::tests::a_composition_is_marked_then_committed_as_one_step ... ok
+test input::buffer::tests::a_number_field_takes_only_number_characters ... ok
+test input::buffer::tests::a_password_is_never_copied_and_is_one_word ... ok
+test input::buffer::tests::a_single_line_takes_line_breaks_as_spaces ... ok
+test input::buffer::tests::a_completed_shortcode_becomes_its_emoji ... ok
+test input::buffer::tests::emoji_are_atoms ... ok
+test input::buffer::tests::left_and_right_collapse_a_selection_to_its_edge ... ok
+test input::buffer::tests::maxlength_counts_utf16_units_and_cuts_the_insertion ... ok
+test input::buffer::tests::read_only_refuses_edits_but_not_code ... ok
+test input::buffer::tests::the_byte_cap_clamps_as_clamp_line_does ... ok
+test input::buffer::tests::typing_selecting_deleting ... ok
+test input::buffer::tests::undo_groups_a_burst_and_breaks_on_a_caret_move ... ok
+test input::history::tests::a_closed_step_and_other_edits_start_new_steps ... ok
+test input::history::tests::an_amended_edit_is_undone_with_its_step ... ok
+test input::history::tests::typing_joins_the_open_step_and_a_deletion_starts_one ... ok
+test input::keymap::tests::everything_else_is_left_to_the_platform_and_the_app ... ok
+test input::keymap::tests::the_editing_keys_of_linux_and_windows ... ok
+test label::selection_tests::a_selection_is_a_byte_range_of_the_text ... ok
+test input::history::tests::the_history_is_bounded ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+[1m[92m     Running[0m tests\engine.rs (target\debug\build\decibell-text/2b950faf4c40b596\out\engine-2b950faf4c40b596.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\fidelity.rs (target\debug\build\decibell-text/e51a74265838a5e8\out\fidelity-e51a74265838a5e8.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\focus.rs (target\debug\build\decibell-text/2ebbc729b47eaec5\out\focus-2ebbc729b47eaec5.exe)
+
+running 2 tests
+test a_field_focused_in_a_background_window_is_focused ... ok
+test a_typing_step_stays_open_over_a_window_switch ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\input_cost.rs (target\debug\build\decibell-text/8870aa8c8b13b02d\out\input_cost-8870aa8c8b13b02d.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\input_vectors.rs (target\debug\build\decibell-text/1ea163111fbf72f8\out\input_vectors-1ea163111fbf72f8.exe)
+
+running 5 tests
+test the_rest_is_chromiums ... ok
+test undo_steps_are_chromiums ... ok
+test the_windows_rule_is_the_codes ... ok
+test caret_stops_and_deletions_are_chromiums ... ok
+test word_stops_are_chromiums ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\katex_faces.rs (target\debug\build\decibell-text/5e385ec9e68bcd13\out\katex_faces-5e385ec9e68bcd13.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests\paint.rs (target\debug\build\decibell-text/bcf6352b3b81ca69\out\paint-bcf6352b3b81ca69.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m decibell_text
+
+running 2 tests
+test crates\decibell-text\src\input\element.rs - input::element::TextInput (line 19) ... ignored
+test crates\decibell-text\src\rich.rs - rich::RichText (line 726) ... ignored
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test crates\decibell-text\src\label.rs - label::Label (line 20) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.32s; merged doctests compilation took 0.30s
+=== cargo test -p decibell-ui
+[1m[92m   Compiling[0m decibell-harness v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-harness)
+[1m[92m   Compiling[0m decibell-ui v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-ui)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 6.77s
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\build\decibell-ui/748cc62049326e3a\out\decibell_ui-748cc62049326e3a.exe)
+
+running 39 tests
+test assets::tests::restroke_keeps_other_widths ... ok
+test assets::tests::icons_are_embedded_sorted_and_restroked ... ok
+test icon::tests::every_name_has_its_file ... ok
+test identity::tests::bell_curve_matches_the_component ... ok
+test identity::tests::person_keys ... ok
+test layer::tests::nested_layers_stack_on_their_parent ... ok
+test identity::tests::ramp_matches_the_renderer ... ok
+test motion::tests::colours_mix_premultiplied ... ok
+test motion::tests::ease_in_out_matches_the_spec_spot_values ... ok
+test motion::tests::slopes_are_the_derivative ... ok
+test motion::tests::keyframes_ease_per_segment ... ok
+test motion::tests::transitions_run_and_reverse_shortened ... ok
+test popover::tests::opens_where_it_fits ... ok
+test popover::tests::slides_along_the_edge_when_neither_side_fits ... ok
+test scroll::animator::tests::durations_follow_the_inverse_delta_rule ... ok
+test scroll::animator::tests::k1_arrow_down ... ok
+test scroll::animator::tests::k2_page_down ... ok
+test scroll::animator::tests::lines_convert_to_notches ... ok
+test scroll::animator::tests::k3_arrow_down_held ... ok
+test scroll::animator::tests::precise_deltas_and_the_ends ... ok
+test scroll::animator::tests::w1_one_notch_down ... ok
+test scroll::animator::tests::w2_one_notch_up ... ok
+test scroll::animator::tests::w3_two_notches_60_ms_apart ... ok
+test scroll::animator::tests::w4_three_notches_30_ms_apart ... ok
+test scroll::animator::tests::w5_five_notches_30_ms_apart ... ok
+test scroll::animator::tests::w7_thirty_px_from_the_end ... ok
+test scroll::animator::tests::w6_reversal ... ok
+test scroll::animator::tests::w8_twenty_notches_40_ms_apart ... ok
+test scroll::area::tests::rows_in_a_range ... ok
+test scroll::area::tests::the_bar_matches_chromium ... ok
+test select::tests::keyboard_moves_skip_disabled_options ... ok
+test select::tests::the_filter_matches_labels_and_hints ... ok
+test select::tests::typeahead_cycles_and_narrows ... ok
+test slider::tests::values_follow_the_thumb_centre_and_snap ... ok
+test theme::tests::colours_convert_exactly ... ok
+test theme::tests::shadows_follow_css ... ok
+test theme::tests::tokens_cover_every_colour_of_the_palette ... ok
+test theme::tests::every_theme_builds_and_names_bundled_families ... ok
+test icon::tests::every_icon_rasterises ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+[1m[92m     Running[0m tests\layers.rs (target\debug\build\decibell-ui/45316f8a6728f42e\out\layers-45316f8a6728f42e.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m decibell_ui
+
+running 36 tests
+test crates\decibell-ui\src\button.rs - button::IconButton (line 335) ... ignored
+test crates\decibell-ui\src\field.rs - field::Field (line 22) ... ignored
+test crates\decibell-ui\src\field.rs - field::TextField (line 123) ... ignored
+test crates\decibell-ui\src\icon.rs - icon::Icon (line 14) ... ignored
+test crates\decibell-ui\src\identity.rs - identity::Avatar (line 159) ... ignored
+test crates\decibell-ui\src\identity.rs - identity::BellMark (line 335) ... ignored
+test crates\decibell-ui\src\identity.rs - identity::LetterAvatar (line 100) ... ignored
+test crates\decibell-ui\src\identity.rs - identity::StatusDot (line 248) ... ignored
+test crates\decibell-ui\src\interaction.rs - interaction::Hover (line 27) ... ignored
+test crates\decibell-ui\src\lib.rs - focus_navigation (line 99) ... ignored
+test crates\decibell-ui\src\menu.rs - menu::ContextMenu (line 125) ... ignored
+test crates\decibell-ui\src\modal.rs - modal::ConfirmModal (line 339) ... ignored
+test crates\decibell-ui\src\modal.rs - modal::Modal (line 50) ... ignored
+test crates\decibell-ui\src\motion.rs - motion (line 13) ... ignored
+test crates\decibell-ui\src\popover.rs - popover::Placed (line 126) ... ignored
+test crates\decibell-ui\src\popover.rs - popover::Popover (line 349) ... ignored
+test crates\decibell-ui\src\runs.rs - runs (line 5) ... ignored
+test crates\decibell-ui\src\scroll\animator.rs - scroll::animator (line 6) ... ignored
+test crates\decibell-ui\src\select.rs - select::Select (line 265) ... ignored
+test crates\decibell-ui\src\settings.rs - settings::SaveBar (line 554) ... ignored
+test crates\decibell-ui\src\settings.rs - settings::SettingsPane (line 328) ... ignored
+test crates\decibell-ui\src\settings.rs - settings::SettingsWindow (line 129) ... ignored
+test crates\decibell-ui\src\slider.rs - slider::Slider (line 37) ... ignored
+test crates\decibell-ui\src\spinner.rs - spinner::Spinner (line 20) ... ignored
+test crates\decibell-ui\src\structure.rs - structure::Badge (line 121) ... ignored
+test crates\decibell-ui\src\structure.rs - structure::EmptyState (line 277) ... ignored
+test crates\decibell-ui\src\structure.rs - structure::ErrorCard (line 205) ... ignored
+test crates\decibell-ui\src\structure.rs - structure::SectionLabel (line 34) ... ignored
+test crates\decibell-ui\src\structure.rs - structure::divider (line 18) ... ignored
+test crates\decibell-ui\src\toast.rs - toast::ToastStack (line 203) ... ignored
+test crates\decibell-ui\src\toast.rs - toast::Toasts (line 112) ... ignored
+test crates\decibell-ui\src\toggles.rs - toggles::Checkbox (line 124) ... ignored
+test crates\decibell-ui\src\toggles.rs - toggles::SegmentedControl (line 271) ... ignored
+test crates\decibell-ui\src\toggles.rs - toggles::Switch (line 19) ... ignored
+test crates\decibell-ui\src\tooltip.rs - tooltip::Tooltip (line 19) ... ignored
+test crates\decibell-ui\src\tooltip.rs - tooltip::title_tooltip (line 108) ... ignored
+
+test result: ok. 0 passed; 0 failed; 36 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 7 tests
+test crates\decibell-ui\src\button.rs - button::Button (line 173) ... ignored
+test crates\decibell-ui\src\button.rs - button::LinkButton (line 440) ... ignored
+test crates\decibell-ui\src\scroll\area.rs - scroll::area::ScrollArea (line 270) ... ignored
+test crates\decibell-ui\src\scroll\area.rs - scroll::area::ScrollHandle (line 107) ... ignored
+test crates\decibell-ui\src\select.rs - select::SelectHandle (line 218) ... ignored
+test crates\decibell-ui\src\structure.rs - structure::Banner (line 358) ... ignored
+test crates\decibell-ui\src\theme.rs - theme (line 6) ... ignored
+
+test result: ok. 0 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.35s; merged doctests compilation took 0.33s
+=== cargo test -p decibell-picture-editor
+[1m[92m   Compiling[0m decibell-picture-editor v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-picture-editor)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 3.67s
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\build\decibell-picture-editor/8684c48ddfce5ce9\out\decibell_picture_editor-8684c48ddfce5ce9.exe)
+
+running 14 tests
+test geometry::tests::clamping_keeps_a_large_picture_over_the_frame_and_a_small_one_inside_it ... ok
+test geometry::tests::cover_fills_contain_shows_all ... ok
+test geometry::tests::frames_fit_the_stage_inside_its_margin ... ok
+test geometry::tests::same_view_tolerates_sub_pixel_noise ... ok
+test geometry::tests::the_glide_ends_where_it_was_headed ... ok
+test geometry::tests::the_initial_view_is_centred_cover ... ok
+test geometry::tests::the_rubber_band_gives_less_the_further_it_goes ... ok
+test geometry::tests::the_slider_is_logarithmic_and_round_trips ... ok
+test geometry::tests::zooming_keeps_the_point_under_the_pointer ... ok
+test picture::tests::hex_is_lower_case_six_digits ... ok
+test picture::tests::unreadable_files_say_why_in_the_renderers_words ... ok
+test picture::tests::a_png_reads_its_size_transparency_and_main_colour ... ok
+test picture::tests::a_sideways_phone_photo_comes_out_upright ... ok
+test picture::tests::the_export_is_the_output_size_and_under_the_cap ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.62s
+
+[1m[92m   Doc-tests[0m decibell_picture_editor
+
+running 1 test
+test crates\decibell-picture-editor\src\lib.rs - (line 15) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.34s; merged doctests compilation took 0.32s
+=== cargo test -p decibell-video
+[1m[92m   Compiling[0m gpui v0.2.2 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\gpui)
+[1m[92m   Compiling[0m scheduler v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\scheduler)
+[1m[92m   Compiling[0m http_client v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\http_client)
+[1m[92m   Compiling[0m collections v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\collections)
+[1m[92m   Compiling[0m gpui_windows v0.1.0 (D:\a\decibell\decibell\gpui-client\vendor\gpui-src\crates\gpui_windows)
+[1m[92m   Compiling[0m decibell-video v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-video)
+[1m[92m   Compiling[0m decibell-harness v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-harness)
+[1m[92m   Compiling[0m decibell-text v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-text)
+[1m[92m   Compiling[0m decibell-ui v0.1.0 (D:\a\decibell\decibell\gpui-client\crates\decibell-ui)
+[1m[93mwarning[0m[1m[97m: method `widen_shift` is never used[0m
+   [1m[96m--> [0mcrates\decibell-video\src\decode.rs:633:12
+    [1m[96m|[0m
+[1m[96m626[0m [1m[96m|[0m impl SwPicture<'_> {
+    [1m[96m|[0m [1m[96m------------------[0m [1m[96mmethod in this implementation[0m
+[1m[96m...[0m
+[1m[96m633[0m [1m[96m|[0m     pub fn widen_shift(&self) -> u32 {
+    [1m[96m|[0m            [1m[93m^^^^^^^^^^^[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m[1m[97m: function `widen_row` is never used[0m
+   [1m[96m--> [0mcrates\decibell-video\src\decode.rs:644:15
+    [1m[96m|[0m
+[1m[96m644[0m [1m[96m|[0m pub(crate) fn widen_row(out: &mut [u8], row: &[u8], shift: u32) {
+    [1m[96m|[0m               [1m[93m^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: constant `SAME_PICTURE` is never used[0m
+   [1m[96m--> [0mcrates\decibell-video\src\selftests.rs:604:7
+    [1m[96m|[0m
+[1m[96m604[0m [1m[96m|[0m const SAME_PICTURE: f64 = 1.0;
+    [1m[96m|[0m       [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: constant `ALLOCATIONS_PER_PRESENT` is never used[0m
+    [1m[96m--> [0mcrates\decibell-video\src\selftests.rs:1252:7
+     [1m[96m|[0m
+[1m[96m1252[0m [1m[96m|[0m const ALLOCATIONS_PER_PRESENT: u64 = 170;
+     [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `allocation_count` is never used[0m
+    [1m[96m--> [0mcrates\decibell-video\src\selftests.rs:1255:4
+     [1m[96m|[0m
+[1m[96m1255[0m [1m[96m|[0m fn allocation_count() -> Option<u64> {
+     [1m[96m|[0m    [1m[93m^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m: `decibell-video` (lib) generated 5 warnings
+[1m[93mwarning[0m: `decibell-video` (lib test) generated 5 warnings (5 duplicates)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 1m 14s
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\build\decibell-video/39bac9b3f9a57c9c\out\decibell_video-39bac9b3f9a57c9c.exe)
+
+running 39 tests
+test decode::tests::reads_a_barcode ... ok
+test hub::tests::a_decoder_that_does_not_open_is_tried_once_and_the_next_one_plays ... ok
+test hub::tests::a_decoder_that_fails_in_its_first_pictures_is_given_up_for_the_session ... ok
+test hub::tests::a_forced_decoder_that_does_not_work_is_not_replaced_and_not_retried ... ok
+test hub::tests::a_late_failure_costs_only_the_stream_it_happened_on ... ok
+test hub::tests::a_removed_stream_stops_and_a_resolution_change_is_followed ... ok
+test hub::tests::a_short_starvation_is_ridden_out_and_a_long_one_sheds ... ok
+test hub::tests::a_stream_shown_only_in_a_hidden_window_pauses_and_resumes_from_a_keyframe ... ok
+test hub::tests::a_stream_that_stops_stalls_once_and_resumes_with_its_next_picture ... ok
+test hub::tests::every_codec_decodes_every_frame_to_the_right_picture ... ok
+test decode::tests::every_codec_has_a_software_decoder ... ok
+test hub::tests::frames_of_a_stream_nobody_displays_are_dropped_without_a_thread ... ok
+test hub::tests::hevc_with_an_out_of_band_description_decodes ... ok
+test hub::tests::interest_and_keyframe_requests_reach_the_callbacks ... ok
+test hub::tests::the_walk_ends_on_software_and_never_goes_back ... ok
+test orient::tests::a_quarter_turn_clockwise_puts_the_stored_top_left_at_the_top_right ... ok
+test orient::tests::the_four_rotations_and_the_mirrors_are_read_from_the_matrix ... ok
+test packet::tests::a_vec_with_spare_capacity_is_carried_where_it_is ... ok
+test packet::tests::an_owner_without_padding_is_copied_and_dropped_at_once ... ok
+test probe::tests::a_wrong_picture_is_not_the_test_picture ... ok
+test probe::tests::the_cache_round_trips_and_is_refused_for_another_device ... ok
+test queue::tests::a_burst_arriving_at_once_is_queued ... ok
+test queue::tests::a_decoder_that_falls_sixteen_frames_behind_is_not_catching_up ... ok
+test queue::tests::a_discontinuity_gates_and_asks ... ok
+test queue::tests::a_new_decoder_gets_room_to_catch_up ... ok
+test queue::tests::a_short_gap_is_ridden_out_and_a_long_one_sheds ... ok
+test queue::tests::a_keyframe_that_does_not_fit_replaces_the_queue ... ok
+test queue::tests::overflow_sheds_to_the_next_keyframe_and_asks_for_one_once ... ok
+test queue::tests::refuses_everything_until_started_and_deltas_until_a_keyframe ... ok
+test queue::tests::the_steady_depth_is_a_hundred_milliseconds_of_frames ... ok
+test select::tests::a_forced_order_replaces_the_platforms ... ok
+test select::tests::a_skip_is_remembered_once_per_codec_and_decoder ... ok
+test select::tests::an_order_keeps_each_decoder_once_and_parses_names ... ok
+test stats::tests::buckets_are_monotonic ... ok
+test stats::tests::histogram_percentiles_are_within_a_bucket ... ok
+test stats::tests::presented_is_matched_to_its_frame ... ok
+test hub::tests::the_probe_reports_the_first_decoder_that_really_decodes ... ok
+test queue::tests::idle_and_stop_deregister_the_consumer ... ok
+test probe::tests::every_test_frame_decodes_in_software_to_the_test_picture ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+[1m[92m     Running[0m tests\alloc.rs (target\debug\build\decibell-video/63af64be830b7fc9\out\alloc-63af64be830b7fc9.exe)
+
+running 2 tests
+test no_rust_allocation_per_frame_after_a_decoder_was_replaced ... ok
+test no_rust_allocation_per_frame_in_the_steady_state ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m decibell_video
+
+running 2 tests
+test crates\decibell-video\src\lib.rs - (line 8) ... ignored
+test crates\decibell-video\src\view.rs - view::VideoView (line 30) ... ignored
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.31s; merged doctests compilation took 0.30s

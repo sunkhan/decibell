@@ -1,0 +1,43 @@
+﻿tools/perf/windows/row.ps1 on the runner
+settling 20 s
+sampling decibell every 1 s, 20 samples
+
+| 20261128-003949 | gpui | ci gallery at rest | 26.63 | 63.63 | 0 | 0 | 0 / 0 | 0 | 0 | 0 | 11 | 1 |
+appended to D:\a\decibell\decibell\gpui-client\perf-results\windows-table.md (process decibell 8836; samples 
+D:\a\decibell\decibell\gpui-client\perf-results\gpui-ci-gallery-at-rest-20261128-003949.csv, threads 
+D:\a\decibell\decibell\gpui-client\perf-results\gpui-ci-gallery-at-rest-20261128-003949-threads.txt)
+--- the results file
+# Windows measurements: the native client against Electron
+
+Rows appended by tools/perf/windows/row.ps1 (20 s windows after a settle; columns explained in the script). Machine: AMD EPYC 7763 64-Core Processor                ; Microsoft Hyper-V Video; Microsoft Windows Server 2025 Datacenter 10.0.26100.0.
+
+| run | client | scenario | private_ws_mb | commit_mb | cpu_core_pct | wakeups_s | frames drawn / presented | gpu_3d_pct | gpu_decode_pct | gpu_mb | threads | procs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 20261128-003949 | gpui | ci gallery at rest | 26.63 | 63.63 | 0 | 0 | 0 / 0 | 0 | 0 | 0 | 11 | 1 |
+--- who wakes (threads.ps1)
+decibell: 0 context switches/s over 10 s
+  main                      0/s
+
+Proc  Pid  Tid PerSec Name                   Module                 Offset    
+----  ---  --- ------ ----                   ------                 ------    
+main 8836  560      0 VSyncProvider          decibell.exe           +0x464b090
+main 8836 8160      0 DManip Delegate Thread directmanipulation.dll +0x59d30  
+main 8836  744      0                        ntdll.dll              +0x845d0  
+main 8836 7124      0                        ntdll.dll              +0x845d0  
+main 8836 7532      0                        ntdll.dll              +0x845d0  
+main 8836 7868      0                        ntdll.dll              +0x845d0  
+main 8836 5720      0                        combase.dll            +0x11c410 
+main 8836 5672      0                        combase.dll            +0x11c410 
+main 8836  892      0 decibell-perf          decibell.exe           +0x464b090
+main 7904 6176      0                        combase.dll            +0x11c410 
+
+
+
+--- install size
+     106.8 MB       1 files  target\debug\decibell.exe
+     106.8 MB       1 files  total
+--- the client's stderr
+decibell: first-frame 509.7 ms since start monotonic_ns=1808382902300
+decibell: frames drawn=2 presented=1
+decibell: frames drawn=2 presented=1
+alive: True
