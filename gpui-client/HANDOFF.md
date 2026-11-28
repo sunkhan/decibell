@@ -22,7 +22,7 @@ needed to continue. The local stack is up unless the machine restarted (`tools/d
 |---|---|---|
 | **The pushed head** | `gpui-client` = `origin/gpui-client` (see `git log -1`) | Everything below "merged" is on it. Windows Native Check and the Native Client Release dry run were green on `0eed848`; the later pushes (sign-in, the suite triage, Windows checkpoint 5, the Members crash fix) had their runs still going when work stopped: **read both workflows' results first.** |
 | **Voice and DMs / calls, round 1** | on the head since `2ddad7d8` | Landed after a full verification on that tree: `tools/win-check.sh --shaders` rc 0, 739 unit tests, both flavours, `check-ship.sh`, 22 of 22 release tests, 64 of 66 self-tests (every `voice-*`, `video-*`, `media-*`, `call-*`, `dm-*`, `server-settings-*`). The two failures are open items below (`search-paging`; `video-vaapi`, intermittent). `.worktrees/land4` still holds that build: **the owner uses it to try the client** (`target/release/decibell` there); rebuild the main tree's before removing it. |
-| **Communities / channels, round 1** | `wip/fix-servers`, `.worktrees/fix-servers` (base `52d32cc` + audit B's docs) | Stopped with its work committed and compiling: `e6064dac` (product), `cbf38701` (tests), `ee14806e` / `6e76c59e` (test fixes, PARITY §4–§5), `ab98c8dc` (`docs/wip-fix-servers.md`: what is done, what is next). **Open there: `server-settings-idle` fails on that branch, cause not found.** Not verified by me, not stacked. |
+| **Communities / channels, round 1** | on the head since `14c072be` | Landed after a full verification on the stacked tree: `tools/win-check.sh --shaders` rc 0, 740 unit tests, both flavours, `check-ship.sh`, the release tests (the "starts on trial" case failed once and passed on rerun), 48 of 49 self-tests (every server, channel, role, moderation and shell test, the agent's new ones among them; `server-settings-idle` passes with the merged three-try check). Its notes are `docs/wip-fix-servers.md` (what is left: an invite card's Join *press* for 4.6; focus scrolling in overflow lists). |
 | **Round 2** (rows still `partial` after round 1), stopped about an hour in; **none of its new tests has run** | `.worktrees/r2-*`, each with `docs/wip-r2-<name>.md` (finished / half done with file and function / not started / what was learned) | `wip/r2-signin` (base `99f9645`): `35a2de07` compiles, notes `24cb55f0` (the heartbeat interval for 1.5, how the unlisted throwaway community for 1.9 works). `wip/r2-people` (same base): `f7a686a5` (a fake FileChooser portal test for the avatar buttons), `e5392db3` (the 2.8 / 2.2 tests), notes `48ca18aa`; compile-checked except a last small audit-log edit. `wip/r2-chat` (rebased onto `70ce847b`; its paging fix is landed): `1e2d9566`, the rest of round 2 as one WIP commit, unrun. `wip/r2-app` (same base): `ce302b6c` compiles (a modal keeps a dropped focus, one opener for links, once-guarded feature inits, their tests), notes `abf29a0d`; the §9 rows themselves not started. `wip/r2-voice` (base `wip/land3`): `7bdc6a62`, **labelled "does not compile" because its compile check was cancelled: unverified**, notes `467b6486`. |
 
 Agents can be resumed with their context (their ids are in the session's transcript) or replaced by fresh ones
@@ -49,7 +49,7 @@ briefed from the audit reports (`docs/parity-audit-{a,b,c}.md`), the `PARITY.md`
    closure is set), and the member list and the GIF picker use the same check. `search-paging` 3 of 3,
    `search-paging-fixture` 2 of 2. The rest of that agent's round 2 is one WIP commit on `wip/r2-chat`
    (`1e2d9566`, rebased onto the head; `docs/wip-r2-chat.md` there).
-4. **Finish round 1 for communities / channels and round 2 for the other areas**, landing each as before
+4. **Finish round 2 for every area** (round 1 is landed everywhere), landing each as before
    (below), until **no `PARITY.md` row is `partial`**. Quirk numbers reserved for round 2 so parallel work
    doesn't collide: sign-in 51–54, people 55–58, chat 59–64, app 65–70, voice 71–76 (`docs/electron-quirks.md`
    ends at #49 on `wip/land4`; #37–#39 and #47 are unused).
@@ -66,10 +66,17 @@ briefed from the audit reports (`docs/parity-audit-{a,b,c}.md`), the `PARITY.md`
 
 ### The checklist today
 
-`PARITY.md` on `wip/land4`: **21 rows `done`, 9 `needs owner`, 64 `partial`** of 94 (10 / 1 / 83 after the
-first audit this morning). By section (done / needs owner / partial): §1 5 / 0 / 4, §2 4 / 2 / 2, §3 3 / 4 / 0,
-§4 3 / 0 / 9, §5 4 / 0 / 5, §6 2 / 0 / 14, §7 0 / 0 / 11, §8 0 / 1 / 7, §9 0 / 2 / 12. Most `partial` rows are
-built and miss a test for one or two rules; each row's Evidence cell lists what.
+`PARITY.md` on the head: **32 rows `done`, 10 `needs owner`, 52 `partial`** of 94 (10 / 1 / 83 after the first
+audit). Round 1 is landed for every area; the 52 are round 2's (the `wip/r2-*` branches hold its start).
+
+**The shared account `alice` has encryption keys on the test central since 2026-11-27 ~22:40** (set up from the
+app while the owner tried the client as alice; the passphrase is the owner's). A fresh profile signing in as
+alice now opens the unlock prompt, which takes every click: `user-menu-moderation` fails on it ("timed out
+after 10 s waiting for Daily Gaming": the click on the server tile lands on the prompt). Either the keys are
+removed from the test stack (`e2ee_keys`, `e2ee_backups` rows of alice's uid: ask the owner first, it is his
+trial state) or the owner gets trial accounts of his own that no test uses; tests that sign in as a shared
+account should not assume it has no keys. Each shared account also has 100 device rows on central (every
+fresh-profile sign-in is a device): harmless so far.
 
 ### Merged today (2026-11-27), each verified before or right after its push
 
