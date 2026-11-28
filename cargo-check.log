@@ -1,0 +1,1152 @@
+[1m[92m    Updating[0m crates.io index
+[1m[92m   Compiling[0m decibell-core v0.0.1 (D:\a\decibell\decibell\crates\decibell-core)
+[1m[92m   Compiling[0m decibell-native v0.0.1 (D:\a\decibell\decibell\electron-client\native)
+[1m[93mwarning[0m[1m[97m: value assigned to `input_stream_opt` is never read[0m
+   [1m[96m--> [0mD:\a\decibell\decibell\crates\decibell-core\src\media\pipeline.rs:584:21
+    [1m[96m|[0m
+[1m[96m584[0m [1m[96m|[0m                     input_stream_opt = None; // drop old stream
+    [1m[96m|[0m                     [1m[93m^^^^^^^^^^^^^^^^[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mhelp[0m: maybe it is overwritten before being read?
+    [1m[96m= [0m[1m[97mnote[0m: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m[1m[97m: field `hw_device_ref` is never read[0m
+   [1m[96m--> [0mD:\a\decibell\decibell\crates\decibell-core\src\media\encoder.rs:106:5
+    [1m[96m|[0m
+[1m[96m 84[0m [1m[96m|[0m pub struct Encoder {
+    [1m[96m|[0m            [1m[96m-------[0m [1m[96mfield in this struct[0m
+[1m[96m...[0m
+[1m[96m106[0m [1m[96m|[0m     hw_device_ref: BufferRef,
+    [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m[1m[97m: field `2` is never read[0m
+    [1m[96m--> [0mD:\a\decibell\decibell\crates\decibell-core\src\media\pipeline.rs:1905:48
+     [1m[96m|[0m
+[1m[96m1905[0m [1m[96m|[0m struct StopOnDrop(Arc<AtomicBool>, Arc<Waker>, Arc<MediaSocket>);
+     [1m[96m|[0m        [1m[96m----------[0m [1m[96mfield in this struct[0m         [1m[93m^^^^^^^^^^^^^^^^[0m
+     [1m[96m|[0m
+     [1m[96m= [0m[1m[97mhelp[0m: consider removing this field
+
+[1m[93mwarning[0m[1m[97m: field `terminated` is never read[0m
+   [1m[96m--> [0mD:\a\decibell\decibell\crates\decibell-core\src\net\community.rs:182:5
+    [1m[96m|[0m
+[1m[96m149[0m [1m[96m|[0m pub struct CommunityClient {
+    [1m[96m|[0m            [1m[96m---------------[0m [1m[96mfield in this struct[0m
+[1m[96m...[0m
+[1m[96m182[0m [1m[96m|[0m     terminated: Arc<AtomicBool>,
+    [1m[96m|[0m     [1m[93m^^^^^^^^^^[0m
+
+[1m[93mwarning[0m: `decibell-core` (lib) generated 4 warnings
+[1m[93mwarning[0m[1m[97m: struct `UploadAvatarArgs` is never constructed[0m
+  [1m[96m--> [0msrc\commands\auth.rs:14:12
+   [1m[96m|[0m
+[1m[96m14[0m [1m[96m|[0m pub struct UploadAvatarArgs {
+   [1m[96m|[0m            [1m[93m^^^^^^^^^^^^^^^^[0m
+   [1m[96m|[0m
+   [1m[96m= [0m[1m[97mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m[1m[97m: struct `FetchAvatarResult` is never constructed[0m
+  [1m[96m--> [0msrc\commands\auth.rs:19:12
+   [1m[96m|[0m
+[1m[96m19[0m [1m[96m|[0m pub struct FetchAvatarResult {
+   [1m[96m|[0m            [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `login` is never used[0m
+  [1m[96m--> [0msrc\commands\auth.rs:26:14
+   [1m[96m|[0m
+[1m[96m26[0m [1m[96m|[0m pub async fn login(args: LoginArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `auto_login` is never used[0m
+  [1m[96m--> [0msrc\commands\auth.rs:35:14
+   [1m[96m|[0m
+[1m[96m35[0m [1m[96m|[0m pub async fn auto_login() -> napi::Result<bool> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `rename_account` is never used[0m
+  [1m[96m--> [0msrc\commands\auth.rs:47:14
+   [1m[96m|[0m
+[1m[96m47[0m [1m[96m|[0m pub async fn rename_account(args: RenameAccountArgs) -> napi::Result<RenameAccountResult> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `register` is never used[0m
+  [1m[96m--> [0msrc\commands\auth.rs:54:14
+   [1m[96m|[0m
+[1m[96m54[0m [1m[96m|[0m pub async fn register(args: RegisterArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `logout` is never used[0m
+  [1m[96m--> [0msrc\commands\auth.rs:59:14
+   [1m[96m|[0m
+[1m[96m59[0m [1m[96m|[0m pub async fn logout() -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `upload_avatar` is never used[0m
+  [1m[96m--> [0msrc\commands\auth.rs:67:14
+   [1m[96m|[0m
+[1m[96m67[0m [1m[96m|[0m pub async fn upload_avatar(args: UploadAvatarArgs) -> napi::Result<UploadAvatarResult> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `fetch_avatar` is never used[0m
+  [1m[96m--> [0msrc\commands\auth.rs:77:14
+   [1m[96m|[0m
+[1m[96m77[0m [1m[96m|[0m pub async fn fetch_avatar(args: FetchAvatarArgs) -> napi::Result<FetchAvatarResult> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `get_call_config` is never used[0m
+  [1m[96m--> [0msrc\commands\call.rs:11:14
+   [1m[96m|[0m
+[1m[96m11[0m [1m[96m|[0m pub async fn get_call_config() -> napi::Result<CallConfig> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `send_call_signal` is never used[0m
+  [1m[96m--> [0msrc\commands\call.rs:18:14
+   [1m[96m|[0m
+[1m[96m18[0m [1m[96m|[0m pub async fn send_call_signal(args: SendCallSignalArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `call_prepare` is never used[0m
+  [1m[96m--> [0msrc\commands\call.rs:25:14
+   [1m[96m|[0m
+[1m[96m25[0m [1m[96m|[0m pub async fn call_prepare(args: CallPrepareArgs) -> napi::Result<CallPrepareResult> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `call_connect` is never used[0m
+  [1m[96m--> [0msrc\commands\call.rs:32:14
+   [1m[96m|[0m
+[1m[96m32[0m [1m[96m|[0m pub async fn call_connect(args: CallConnectArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `call_end` is never used[0m
+  [1m[96m--> [0msrc\commands\call.rs:39:14
+   [1m[96m|[0m
+[1m[96m39[0m [1m[96m|[0m pub async fn call_end() -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `call_watch_stream` is never used[0m
+  [1m[96m--> [0msrc\commands\call.rs:44:14
+   [1m[96m|[0m
+[1m[96m44[0m [1m[96m|[0m pub async fn call_watch_stream(args: CallWatchStreamArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `request_channel_history` is never used[0m
+  [1m[96m--> [0msrc\commands\channels.rs:13:14
+   [1m[96m|[0m
+[1m[96m13[0m [1m[96m|[0m pub async fn request_channel_history(args: RequestChannelHistoryArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `search_messages` is never used[0m
+  [1m[96m--> [0msrc\commands\channels.rs:20:14
+   [1m[96m|[0m
+[1m[96m20[0m [1m[96m|[0m pub async fn search_messages(args: SearchMessagesArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `wipe_channel_history` is never used[0m
+  [1m[96m--> [0msrc\commands\channels.rs:34:14
+   [1m[96m|[0m
+[1m[96m34[0m [1m[96m|[0m pub async fn wipe_channel_history(args: WipeChannelHistoryArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `update_channel_retention` is never used[0m
+  [1m[96m--> [0msrc\commands\channels.rs:44:14
+   [1m[96m|[0m
+[1m[96m44[0m [1m[96m|[0m pub async fn update_channel_retention(args: UpdateChannelRetentionArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `send_channel_message` is never used[0m
+  [1m[96m--> [0msrc\commands\channels.rs:51:14
+   [1m[96m|[0m
+[1m[96m51[0m [1m[96m|[0m pub async fn send_channel_message(args: SendChannelMessageArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `delete_channel_message` is never used[0m
+  [1m[96m--> [0msrc\commands\channels.rs:62:14
+   [1m[96m|[0m
+[1m[96m62[0m [1m[96m|[0m pub async fn delete_channel_message(args: DeleteChannelMessageArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `edit_channel_message` is never used[0m
+  [1m[96m--> [0msrc\commands\channels.rs:72:14
+   [1m[96m|[0m
+[1m[96m72[0m [1m[96m|[0m pub async fn edit_channel_message(args: EditChannelMessageArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `create_channel` is never used[0m
+  [1m[96m--> [0msrc\commands\channels.rs:79:14
+   [1m[96m|[0m
+[1m[96m79[0m [1m[96m|[0m pub async fn create_channel(args: CreateChannelArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `reorder_channels` is never used[0m
+  [1m[96m--> [0msrc\commands\channels.rs:86:14
+   [1m[96m|[0m
+[1m[96m86[0m [1m[96m|[0m pub async fn reorder_channels(args: ReorderChannelsArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `rename_channel` is never used[0m
+  [1m[96m--> [0msrc\commands\channels.rs:93:14
+   [1m[96m|[0m
+[1m[96m93[0m [1m[96m|[0m pub async fn rename_channel(args: RenameChannelArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_channel_overwrite` is never used[0m
+   [1m[96m--> [0msrc\commands\channels.rs:104:14
+    [1m[96m|[0m
+[1m[96m104[0m [1m[96m|[0m pub async fn set_channel_overwrite(args: SetChannelOverwriteArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `sync_channel_permissions` is never used[0m
+   [1m[96m--> [0msrc\commands\channels.rs:114:14
+    [1m[96m|[0m
+[1m[96m114[0m [1m[96m|[0m pub async fn sync_channel_permissions(args: SyncChannelPermissionsArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_category_sync` is never used[0m
+   [1m[96m--> [0msrc\commands\channels.rs:124:14
+    [1m[96m|[0m
+[1m[96m124[0m [1m[96m|[0m pub async fn set_category_sync(args: SetCategorySyncArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `list_channel_overwrites` is never used[0m
+   [1m[96m--> [0msrc\commands\channels.rs:131:14
+    [1m[96m|[0m
+[1m[96m131[0m [1m[96m|[0m pub async fn list_channel_overwrites(args: ListChannelOverwritesArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `delete_channel` is never used[0m
+   [1m[96m--> [0msrc\commands\channels.rs:138:14
+    [1m[96m|[0m
+[1m[96m138[0m [1m[96m|[0m pub async fn delete_channel(args: DeleteChannelArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `list_members` is never used[0m
+  [1m[96m--> [0msrc\commands\community.rs:18:14
+   [1m[96m|[0m
+[1m[96m18[0m [1m[96m|[0m pub async fn list_members(args: ListMembersArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `search_members` is never used[0m
+  [1m[96m--> [0msrc\commands\community.rs:28:14
+   [1m[96m|[0m
+[1m[96m28[0m [1m[96m|[0m pub async fn search_members(args: SearchMembersArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `update_server` is never used[0m
+  [1m[96m--> [0msrc\commands\community.rs:38:14
+   [1m[96m|[0m
+[1m[96m38[0m [1m[96m|[0m pub async fn update_server(args: UpdateServerArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `list_audit_log` is never used[0m
+  [1m[96m--> [0msrc\commands\community.rs:45:14
+   [1m[96m|[0m
+[1m[96m45[0m [1m[96m|[0m pub async fn list_audit_log(args: ListAuditLogArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `get_storage_info` is never used[0m
+  [1m[96m--> [0msrc\commands\community.rs:54:14
+   [1m[96m|[0m
+[1m[96m54[0m [1m[96m|[0m pub async fn get_storage_info(args: StorageInfoArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_storage_min_free` is never used[0m
+  [1m[96m--> [0msrc\commands\community.rs:63:14
+   [1m[96m|[0m
+[1m[96m63[0m [1m[96m|[0m pub async fn set_storage_min_free(args: SetStorageMinFreeArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `timeout_member` is never used[0m
+  [1m[96m--> [0msrc\commands\community.rs:72:14
+   [1m[96m|[0m
+[1m[96m72[0m [1m[96m|[0m pub async fn timeout_member(args: TimeoutMemberArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `voice_mod` is never used[0m
+  [1m[96m--> [0msrc\commands\community.rs:79:14
+   [1m[96m|[0m
+[1m[96m79[0m [1m[96m|[0m pub async fn voice_mod(args: VoiceModArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `transfer_ownership` is never used[0m
+  [1m[96m--> [0msrc\commands\community.rs:88:14
+   [1m[96m|[0m
+[1m[96m88[0m [1m[96m|[0m pub async fn transfer_ownership(args: TransferOwnershipArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `list_bans` is never used[0m
+  [1m[96m--> [0msrc\commands\community.rs:96:14
+   [1m[96m|[0m
+[1m[96m96[0m [1m[96m|[0m pub async fn list_bans(args: ListBansArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `kick_member` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:103:14
+    [1m[96m|[0m
+[1m[96m103[0m [1m[96m|[0m pub async fn kick_member(args: KickMemberArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `ban_member` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:110:14
+    [1m[96m|[0m
+[1m[96m110[0m [1m[96m|[0m pub async fn ban_member(args: BanMemberArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `leave_server` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:117:14
+    [1m[96m|[0m
+[1m[96m117[0m [1m[96m|[0m pub async fn leave_server(args: LeaveServerArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `create_invite` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:124:14
+    [1m[96m|[0m
+[1m[96m124[0m [1m[96m|[0m pub async fn create_invite(args: CreateInviteArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `list_invites` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:131:14
+    [1m[96m|[0m
+[1m[96m131[0m [1m[96m|[0m pub async fn list_invites(args: ListInvitesArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `revoke_invite` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:138:14
+    [1m[96m|[0m
+[1m[96m138[0m [1m[96m|[0m pub async fn revoke_invite(args: RevokeInviteArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `list_roles` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:145:14
+    [1m[96m|[0m
+[1m[96m145[0m [1m[96m|[0m pub async fn list_roles(args: ListRolesArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `create_role` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:152:14
+    [1m[96m|[0m
+[1m[96m152[0m [1m[96m|[0m pub async fn create_role(args: CreateRoleArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `update_role` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:159:14
+    [1m[96m|[0m
+[1m[96m159[0m [1m[96m|[0m pub async fn update_role(args: UpdateRoleArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `delete_role` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:166:14
+    [1m[96m|[0m
+[1m[96m166[0m [1m[96m|[0m pub async fn delete_role(args: DeleteRoleArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_member_roles` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:173:14
+    [1m[96m|[0m
+[1m[96m173[0m [1m[96m|[0m pub async fn set_member_roles(args: SetMemberRolesArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `unban_member` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:180:14
+    [1m[96m|[0m
+[1m[96m180[0m [1m[96m|[0m pub async fn unban_member(args: UnbanMemberArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_nickname` is never used[0m
+   [1m[96m--> [0msrc\commands\community.rs:187:14
+    [1m[96m|[0m
+[1m[96m187[0m [1m[96m|[0m pub async fn set_nickname(args: SetNicknameArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `list_devices` is never used[0m
+  [1m[96m--> [0msrc\commands\devices.rs:11:14
+   [1m[96m|[0m
+[1m[96m11[0m [1m[96m|[0m pub async fn list_devices() -> napi::Result<Vec<DeviceEntry>> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `sign_out_devices` is never used[0m
+  [1m[96m--> [0msrc\commands\devices.rs:21:14
+   [1m[96m|[0m
+[1m[96m21[0m [1m[96m|[0m pub async fn sign_out_devices(args: SignOutDevicesArgs) -> napi::Result<SignOutDevicesResult> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `change_password` is never used[0m
+  [1m[96m--> [0msrc\commands\devices.rs:31:14
+   [1m[96m|[0m
+[1m[96m31[0m [1m[96m|[0m pub async fn change_password(args: ChangePasswordArgs) -> napi::Result<ChangePasswordResult> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `request_dm_conversations` is never used[0m
+  [1m[96m--> [0msrc\commands\dm.rs:10:14
+   [1m[96m|[0m
+[1m[96m10[0m [1m[96m|[0m pub async fn request_dm_conversations() -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `request_dm_history` is never used[0m
+  [1m[96m--> [0msrc\commands\dm.rs:17:14
+   [1m[96m|[0m
+[1m[96m17[0m [1m[96m|[0m pub async fn request_dm_history(args: RequestDmHistoryArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `mark_dm_read` is never used[0m
+  [1m[96m--> [0msrc\commands\dm.rs:24:14
+   [1m[96m|[0m
+[1m[96m24[0m [1m[96m|[0m pub async fn mark_dm_read(args: MarkDmReadArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `delete_dm_message` is never used[0m
+  [1m[96m--> [0msrc\commands\dm.rs:33:14
+   [1m[96m|[0m
+[1m[96m33[0m [1m[96m|[0m pub async fn delete_dm_message(args: DeleteDmMessageArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `edit_dm_message` is never used[0m
+  [1m[96m--> [0msrc\commands\dm.rs:43:14
+   [1m[96m|[0m
+[1m[96m43[0m [1m[96m|[0m pub async fn edit_dm_message(args: EditDmMessageArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `e2ee_get_status` is never used[0m
+  [1m[96m--> [0msrc\commands\e2ee.rs:15:14
+   [1m[96m|[0m
+[1m[96m15[0m [1m[96m|[0m pub async fn e2ee_get_status() -> napi::Result<E2eeStatus> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `e2ee_setup` is never used[0m
+  [1m[96m--> [0msrc\commands\e2ee.rs:22:14
+   [1m[96m|[0m
+[1m[96m22[0m [1m[96m|[0m pub async fn e2ee_setup(args: PassphraseArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `e2ee_unlock` is never used[0m
+  [1m[96m--> [0msrc\commands\e2ee.rs:27:14
+   [1m[96m|[0m
+[1m[96m27[0m [1m[96m|[0m pub async fn e2ee_unlock(args: PassphraseArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `e2ee_change_passphrase` is never used[0m
+  [1m[96m--> [0msrc\commands\e2ee.rs:34:14
+   [1m[96m|[0m
+[1m[96m34[0m [1m[96m|[0m pub async fn e2ee_change_passphrase(args: PassphraseArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `e2ee_reset` is never used[0m
+  [1m[96m--> [0msrc\commands\e2ee.rs:41:14
+   [1m[96m|[0m
+[1m[96m41[0m [1m[96m|[0m pub async fn e2ee_reset(args: PassphraseArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `e2ee_peer_info` is never used[0m
+  [1m[96m--> [0msrc\commands\e2ee.rs:46:14
+   [1m[96m|[0m
+[1m[96m46[0m [1m[96m|[0m pub async fn e2ee_peer_info(args: PeerInfoArgs) -> napi::Result<E2eePeerInfo> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `request_friend_list` is never used[0m
+ [1m[96m--> [0msrc\commands\friends.rs:8:14
+  [1m[96m|[0m
+[1m[96m8[0m [1m[96m|[0m pub async fn request_friend_list() -> napi::Result<()> {
+  [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `send_friend_action` is never used[0m
+  [1m[96m--> [0msrc\commands\friends.rs:15:14
+   [1m[96m|[0m
+[1m[96m15[0m [1m[96m|[0m pub async fn send_friend_action(args: SendFriendActionArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `friends_in_community` is never used[0m
+  [1m[96m--> [0msrc\commands\friends.rs:27:14
+   [1m[96m|[0m
+[1m[96m27[0m [1m[96m|[0m pub async fn friends_in_community(
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `hotkeys_configure` is never used[0m
+  [1m[96m--> [0msrc\commands\hotkeys.rs:14:14
+   [1m[96m|[0m
+[1m[96m14[0m [1m[96m|[0m pub async fn hotkeys_configure(args: HotkeysConfigureArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `hotkeys_get_status` is never used[0m
+  [1m[96m--> [0msrc\commands\hotkeys.rs:21:8
+   [1m[96m|[0m
+[1m[96m21[0m [1m[96m|[0m pub fn hotkeys_get_status() -> napi::Result<serde_json::Value> {
+   [1m[96m|[0m        [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `hotkeys_set_paused` is never used[0m
+  [1m[96m--> [0msrc\commands\hotkeys.rs:28:8
+   [1m[96m|[0m
+[1m[96m28[0m [1m[96m|[0m pub fn hotkeys_set_paused(args: HotkeysSetPausedArgs) {
+   [1m[96m|[0m        [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `hotkeys_inject` is never used[0m
+  [1m[96m--> [0msrc\commands\hotkeys.rs:35:8
+   [1m[96m|[0m
+[1m[96m35[0m [1m[96m|[0m pub fn hotkeys_inject(args: HotkeysInjectArgs) -> napi::Result<()> {
+   [1m[96m|[0m        [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `hotkeys_open_system_settings` is never used[0m
+  [1m[96m--> [0msrc\commands\hotkeys.rs:41:14
+   [1m[96m|[0m
+[1m[96m41[0m [1m[96m|[0m pub async fn hotkeys_open_system_settings() -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_input_mode` is never used[0m
+  [1m[96m--> [0msrc\commands\hotkeys.rs:50:8
+   [1m[96m|[0m
+[1m[96m50[0m [1m[96m|[0m pub fn set_input_mode(args: SetInputModeArgs) {
+   [1m[96m|[0m        [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `send_private_message` is never used[0m
+ [1m[96m--> [0msrc\commands\messaging.rs:8:14
+  [1m[96m|[0m
+[1m[96m8[0m [1m[96m|[0m pub async fn send_private_message(args: SendPrivateMessageArgs) -> napi::Result<()> {
+  [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `presence_subscribe` is never used[0m
+  [1m[96m--> [0msrc\commands\presence.rs:13:14
+   [1m[96m|[0m
+[1m[96m13[0m [1m[96m|[0m pub async fn presence_subscribe(args: PresenceSubscribeArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_status` is never used[0m
+  [1m[96m--> [0msrc\commands\presence.rs:20:14
+   [1m[96m|[0m
+[1m[96m20[0m [1m[96m|[0m pub async fn set_status(args: SetStatusArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_status_message` is never used[0m
+  [1m[96m--> [0msrc\commands\presence.rs:30:14
+   [1m[96m|[0m
+[1m[96m30[0m [1m[96m|[0m pub async fn set_status_message(args: SetStatusMessageArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `system_idle_state` is never used[0m
+  [1m[96m--> [0msrc\commands\presence.rs:40:14
+   [1m[96m|[0m
+[1m[96m40[0m [1m[96m|[0m pub async fn system_idle_state(args: SystemIdleArgs) -> napi::Result<String> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_idle` is never used[0m
+  [1m[96m--> [0msrc\commands\presence.rs:49:14
+   [1m[96m|[0m
+[1m[96m49[0m [1m[96m|[0m pub async fn set_idle(args: SetIdleArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: struct `UpdateServerPictureArgs` is never constructed[0m
+  [1m[96m--> [0msrc\commands\servers.rs:15:12
+   [1m[96m|[0m
+[1m[96m15[0m [1m[96m|[0m pub struct UpdateServerPictureArgs {
+   [1m[96m|[0m            [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `request_server_list` is never used[0m
+  [1m[96m--> [0msrc\commands\servers.rs:23:14
+   [1m[96m|[0m
+[1m[96m23[0m [1m[96m|[0m pub async fn request_server_list() -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `connect_to_community` is never used[0m
+  [1m[96m--> [0msrc\commands\servers.rs:30:14
+   [1m[96m|[0m
+[1m[96m30[0m [1m[96m|[0m pub async fn connect_to_community(args: ConnectToCommunityArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `redeem_invite` is never used[0m
+  [1m[96m--> [0msrc\commands\servers.rs:39:14
+   [1m[96m|[0m
+[1m[96m39[0m [1m[96m|[0m pub async fn redeem_invite(args: RedeemInviteArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `disconnect_from_community` is never used[0m
+  [1m[96m--> [0msrc\commands\servers.rs:46:14
+   [1m[96m|[0m
+[1m[96m46[0m [1m[96m|[0m pub async fn disconnect_from_community(args: DisconnectFromCommunityArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `parse_invite_link` is never used[0m
+  [1m[96m--> [0msrc\commands\servers.rs:61:8
+   [1m[96m|[0m
+[1m[96m61[0m [1m[96m|[0m pub fn parse_invite_link(args: ParseInviteLinkArgs) -> napi::Result<ParsedInviteLink> {
+   [1m[96m|[0m        [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `resolve_invite_code` is never used[0m
+  [1m[96m--> [0msrc\commands\servers.rs:71:14
+   [1m[96m|[0m
+[1m[96m71[0m [1m[96m|[0m pub async fn resolve_invite_code(args: ResolveInviteCodeArgs) -> napi::Result<ResolvedInvite> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `get_attachment_target` is never used[0m
+  [1m[96m--> [0msrc\commands\servers.rs:84:14
+   [1m[96m|[0m
+[1m[96m84[0m [1m[96m|[0m pub async fn get_attachment_target(
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `trust_certificate` is never used[0m
+  [1m[96m--> [0msrc\commands\servers.rs:97:14
+   [1m[96m|[0m
+[1m[96m97[0m [1m[96m|[0m pub async fn trust_certificate(args: TrustCertificateArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `request_drop_membership` is never used[0m
+   [1m[96m--> [0msrc\commands\servers.rs:111:14
+    [1m[96m|[0m
+[1m[96m111[0m [1m[96m|[0m pub async fn request_drop_membership(args: DropMembershipArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `update_server_picture` is never used[0m
+   [1m[96m--> [0msrc\commands\servers.rs:122:14
+    [1m[96m|[0m
+[1m[96m122[0m [1m[96m|[0m pub async fn update_server_picture(args: UpdateServerPictureArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `fetch_server_picture` is never used[0m
+   [1m[96m--> [0msrc\commands\servers.rs:132:14
+    [1m[96m|[0m
+[1m[96m132[0m [1m[96m|[0m pub async fn fetch_server_picture(args: FetchServerPictureArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `load_config` is never used[0m
+  [1m[96m--> [0msrc\commands\settings.rs:15:14
+   [1m[96m|[0m
+[1m[96m15[0m [1m[96m|[0m pub async fn load_config() -> napi::Result<serde_json::Value> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `save_settings` is never used[0m
+  [1m[96m--> [0msrc\commands\settings.rs:28:14
+   [1m[96m|[0m
+[1m[96m28[0m [1m[96m|[0m pub async fn save_settings(settings: serde_json::Value) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_dm_privacy` is never used[0m
+  [1m[96m--> [0msrc\commands\settings.rs:39:14
+   [1m[96m|[0m
+[1m[96m39[0m [1m[96m|[0m pub async fn set_dm_privacy(args: SetDmPrivacyArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `list_audio_devices` is never used[0m
+  [1m[96m--> [0msrc\commands\settings.rs:46:14
+   [1m[96m|[0m
+[1m[96m46[0m [1m[96m|[0m pub async fn list_audio_devices() -> napi::Result<AudioDeviceList> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `list_stream_audio_apps` is never used[0m
+  [1m[96m--> [0msrc\commands\stream_audio.rs:10:14
+   [1m[96m|[0m
+[1m[96m10[0m [1m[96m|[0m pub async fn list_stream_audio_apps(
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_stream_audio_filter` is never used[0m
+  [1m[96m--> [0msrc\commands\stream_audio.rs:22:14
+   [1m[96m|[0m
+[1m[96m22[0m [1m[96m|[0m pub async fn set_stream_audio_filter(args: SetStreamAudioFilterArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: struct `SendVideoFrameArgs` is never constructed[0m
+  [1m[96m--> [0msrc\commands\streaming.rs:21:12
+   [1m[96m|[0m
+[1m[96m21[0m [1m[96m|[0m pub struct SendVideoFrameArgs {
+   [1m[96m|[0m            [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: struct `FetchStreamThumbnailResult` is never constructed[0m
+  [1m[96m--> [0msrc\commands\streaming.rs:40:12
+   [1m[96m|[0m
+[1m[96m40[0m [1m[96m|[0m pub struct FetchStreamThumbnailResult {
+   [1m[96m|[0m            [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: struct `SendStreamThumbnailArgs` is never constructed[0m
+  [1m[96m--> [0msrc\commands\streaming.rs:48:12
+   [1m[96m|[0m
+[1m[96m48[0m [1m[96m|[0m pub struct SendStreamThumbnailArgs {
+   [1m[96m|[0m            [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `start_screen_share` is never used[0m
+  [1m[96m--> [0msrc\commands\streaming.rs:59:14
+   [1m[96m|[0m
+[1m[96m59[0m [1m[96m|[0m pub async fn start_screen_share(
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `stop_screen_share` is never used[0m
+  [1m[96m--> [0msrc\commands\streaming.rs:68:14
+   [1m[96m|[0m
+[1m[96m68[0m [1m[96m|[0m pub async fn stop_screen_share(args: StopScreenShareArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `move_stream_to_channel` is never used[0m
+  [1m[96m--> [0msrc\commands\streaming.rs:83:14
+   [1m[96m|[0m
+[1m[96m83[0m [1m[96m|[0m pub async fn move_stream_to_channel(args: MoveStreamToChannelArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `send_video_frame` is never used[0m
+  [1m[96m--> [0msrc\commands\streaming.rs:90:8
+   [1m[96m|[0m
+[1m[96m90[0m [1m[96m|[0m pub fn send_video_frame(args: SendVideoFrameArgs) -> napi::Result<()> {
+   [1m[96m|[0m        [1m[93m^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_stream_frame_sink` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:105:8
+    [1m[96m|[0m
+[1m[96m105[0m [1m[96m|[0m pub fn set_stream_frame_sink(args: SetStreamFrameSinkArgs) {
+    [1m[96m|[0m        [1m[93m^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `clear_stream_frame_sinks` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:112:8
+    [1m[96m|[0m
+[1m[96m112[0m [1m[96m|[0m pub fn clear_stream_frame_sinks() {
+    [1m[96m|[0m        [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `watch_stream` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:117:14
+    [1m[96m|[0m
+[1m[96m117[0m [1m[96m|[0m pub async fn watch_stream(args: WatchStreamArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `stop_watching` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:124:14
+    [1m[96m|[0m
+[1m[96m124[0m [1m[96m|[0m pub async fn stop_watching(args: StopWatchingArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `fetch_stream_thumbnail` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:138:14
+    [1m[96m|[0m
+[1m[96m138[0m [1m[96m|[0m pub async fn fetch_stream_thumbnail(
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `get_caps` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:149:14
+    [1m[96m|[0m
+[1m[96m149[0m [1m[96m|[0m pub async fn get_caps() -> napi::Result<CapsResponse> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_encoder_caps` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:154:14
+    [1m[96m|[0m
+[1m[96m154[0m [1m[96m|[0m pub async fn set_encoder_caps(args: SetEncoderCapsArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_decoder_caps` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:161:14
+    [1m[96m|[0m
+[1m[96m161[0m [1m[96m|[0m pub async fn set_decoder_caps(args: SetDecoderCapsArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `get_codec_settings` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:168:14
+    [1m[96m|[0m
+[1m[96m168[0m [1m[96m|[0m pub async fn get_codec_settings() -> napi::Result<CodecSettingsValue> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_codec_settings` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:175:14
+    [1m[96m|[0m
+[1m[96m175[0m [1m[96m|[0m pub async fn set_codec_settings(args: CodecSettingsValue) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `send_stream_thumbnail` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:182:14
+    [1m[96m|[0m
+[1m[96m182[0m [1m[96m|[0m pub async fn send_stream_thumbnail(args: SendStreamThumbnailArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `probe_native_encoders` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:196:14
+    [1m[96m|[0m
+[1m[96m196[0m [1m[96m|[0m pub async fn probe_native_encoders() -> napi::Result<Vec<NativeEncoderCap>> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `force_keyframe` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:218:14
+    [1m[96m|[0m
+[1m[96m218[0m [1m[96m|[0m pub async fn force_keyframe() -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `request_stream_keyframe` is never used[0m
+   [1m[96m--> [0msrc\commands\streaming.rs:225:14
+    [1m[96m|[0m
+[1m[96m225[0m [1m[96m|[0m pub async fn request_stream_keyframe(args: RequestStreamKeyframeArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `join_voice_channel` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:14:14
+   [1m[96m|[0m
+[1m[96m14[0m [1m[96m|[0m pub async fn join_voice_channel(args: JoinVoiceChannelArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `leave_voice_channel` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:21:14
+   [1m[96m|[0m
+[1m[96m21[0m [1m[96m|[0m pub async fn leave_voice_channel() -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_voice_mute` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:28:14
+   [1m[96m|[0m
+[1m[96m28[0m [1m[96m|[0m pub async fn set_voice_mute(args: SetVoiceMuteArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_voice_deafen` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:35:14
+   [1m[96m|[0m
+[1m[96m35[0m [1m[96m|[0m pub async fn set_voice_deafen(args: SetVoiceDeafenArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_voice_threshold` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:42:14
+   [1m[96m|[0m
+[1m[96m42[0m [1m[96m|[0m pub async fn set_voice_threshold(args: SetVoiceThresholdArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_voice_bitrate` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:49:14
+   [1m[96m|[0m
+[1m[96m49[0m [1m[96m|[0m pub async fn set_voice_bitrate(args: SetVoiceBitrateArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_stream_volume` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:56:14
+   [1m[96m|[0m
+[1m[96m56[0m [1m[96m|[0m pub async fn set_stream_volume(args: SetStreamVolumeArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_stream_stereo` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:63:14
+   [1m[96m|[0m
+[1m[96m63[0m [1m[96m|[0m pub async fn set_stream_stereo(args: SetStreamStereoArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_user_volume` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:70:14
+   [1m[96m|[0m
+[1m[96m70[0m [1m[96m|[0m pub async fn set_user_volume(args: SetUserVolumeArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_aec_enabled` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:77:14
+   [1m[96m|[0m
+[1m[96m77[0m [1m[96m|[0m pub async fn set_aec_enabled(args: SetAecEnabledArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_noise_suppression_level` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:84:14
+   [1m[96m|[0m
+[1m[96m84[0m [1m[96m|[0m pub async fn set_noise_suppression_level(args: SetNoiseSuppressionLevelArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_agc_enabled` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:91:14
+   [1m[96m|[0m
+[1m[96m91[0m [1m[96m|[0m pub async fn set_agc_enabled(args: SetAgcEnabledArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_input_device` is never used[0m
+  [1m[96m--> [0msrc\commands\voice.rs:98:14
+   [1m[96m|[0m
+[1m[96m98[0m [1m[96m|[0m pub async fn set_input_device(args: SetInputDeviceArgs) -> napi::Result<()> {
+   [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_output_device` is never used[0m
+   [1m[96m--> [0msrc\commands\voice.rs:105:14
+    [1m[96m|[0m
+[1m[96m105[0m [1m[96m|[0m pub async fn set_output_device(args: SetOutputDeviceArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_separate_stream_output` is never used[0m
+   [1m[96m--> [0msrc\commands\voice.rs:112:14
+    [1m[96m|[0m
+[1m[96m112[0m [1m[96m|[0m pub async fn set_separate_stream_output(args: SetSeparateStreamOutputArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_stream_output_device` is never used[0m
+   [1m[96m--> [0msrc\commands\voice.rs:119:14
+    [1m[96m|[0m
+[1m[96m119[0m [1m[96m|[0m pub async fn set_stream_output_device(args: SetStreamOutputDeviceArgs) -> napi::Result<()> {
+    [1m[96m|[0m              [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `set_input_level_reporting` is never used[0m
+   [1m[96m--> [0msrc\commands\voice.rs:129:8
+    [1m[96m|[0m
+[1m[96m129[0m [1m[96m|[0m pub fn set_input_level_reporting(args: SetInputLevelReportingArgs) {
+    [1m[96m|[0m        [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m: `decibell-native` (lib test) generated 138 warnings
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 23.83s
+[1m[92m    Updating[0m crates.io index
+[1m[92m Downloading[0m crates ...
+[1m[92m  Downloaded[0m lazy_static v1.5.1
+[1m[92m  Downloaded[0m asn1-rs-impl v0.2.0
+[1m[92m  Downloaded[0m asn1-rs-derive v0.6.0
+[1m[92m  Downloaded[0m displaydoc v0.2.7
+[1m[92m  Downloaded[0m num-conv v0.2.2
+[1m[92m  Downloaded[0m data-encoding v2.11.1
+[1m[92m  Downloaded[0m powerfmt v0.2.1
+[1m[92m  Downloaded[0m bit-vec v0.9.1
+[1m[92m  Downloaded[0m deranged v0.5.9
+[1m[92m  Downloaded[0m asn1-rs v0.7.2
+[1m[92m  Downloaded[0m oid-registry v0.8.1
+[1m[92m  Downloaded[0m rusticata-macros v4.1.0
+[1m[92m  Downloaded[0m der-parser v10.0.0
+[1m[92m  Downloaded[0m rcgen v0.14.10
+[1m[92m  Downloaded[0m synstructure v0.13.2
+[1m[92m  Downloaded[0m time-core v0.1.9
+[1m[92m  Downloaded[0m time-macros v0.2.32
+[1m[92m  Downloaded[0m time v0.3.55
+[1m[92m  Downloaded[0m yasna v0.6.0
+[1m[92m  Downloaded[0m syn v3.0.10
+[1m[92m  Downloaded[0m x509-parser v0.18.1
+[1m[92m    Checking[0m time-core v0.1.9
+[1m[92m    Checking[0m deranged v0.5.9
+[1m[92m    Checking[0m num-conv v0.2.2
+[1m[92m    Checking[0m powerfmt v0.2.1
+[1m[92m   Compiling[0m decibell-core v0.0.1 (D:\a\decibell\decibell\crates\decibell-core)
+[1m[92m    Checking[0m time v0.3.55
+[1m[92m    Checking[0m yasna v0.6.0
+[1m[92m    Checking[0m rcgen v0.14.10
+[1m[93mwarning[0m[1m[97m: unused import: `super::*`[0m
+    [1m[96m--> [0msrc\media\mod.rs:1626:9
+     [1m[96m|[0m
+[1m[96m1626[0m [1m[96m|[0m     use super::*;
+     [1m[96m|[0m         [1m[93m^^^^^^^^[0m
+     [1m[96m|[0m
+     [1m[96m= [0m[1m[97mnote[0m: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m[1m[97m: unused imports: `Duration` and `Instant`[0m
+    [1m[96m--> [0msrc\media\mod.rs:1627:21
+     [1m[96m|[0m
+[1m[96m1627[0m [1m[96m|[0m     use std::time::{Duration, Instant};
+     [1m[96m|[0m                     [1m[93m^^^^^^^^[0m  [1m[93m^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: value assigned to `input_stream_opt` is never read[0m
+   [1m[96m--> [0msrc\media\pipeline.rs:584:21
+    [1m[96m|[0m
+[1m[96m584[0m [1m[96m|[0m                     input_stream_opt = None; // drop old stream
+    [1m[96m|[0m                     [1m[93m^^^^^^^^^^^^^^^^[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mhelp[0m: maybe it is overwritten before being read?
+    [1m[96m= [0m[1m[97mnote[0m: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m[1m[97m: field `hw_device_ref` is never read[0m
+   [1m[96m--> [0msrc\media\encoder.rs:106:5
+    [1m[96m|[0m
+[1m[96m 84[0m [1m[96m|[0m pub struct Encoder {
+    [1m[96m|[0m            [1m[96m-------[0m [1m[96mfield in this struct[0m
+[1m[96m...[0m
+[1m[96m106[0m [1m[96m|[0m     hw_device_ref: BufferRef,
+    [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m[1m[97m: field `2` is never read[0m
+    [1m[96m--> [0msrc\media\pipeline.rs:1905:48
+     [1m[96m|[0m
+[1m[96m1905[0m [1m[96m|[0m struct StopOnDrop(Arc<AtomicBool>, Arc<Waker>, Arc<MediaSocket>);
+     [1m[96m|[0m        [1m[96m----------[0m [1m[96mfield in this struct[0m         [1m[93m^^^^^^^^^^^^^^^^[0m
+     [1m[96m|[0m
+     [1m[96m= [0m[1m[97mhelp[0m: consider removing this field
+
+[1m[93mwarning[0m[1m[97m: field `terminated` is never read[0m
+   [1m[96m--> [0msrc\net\community.rs:182:5
+    [1m[96m|[0m
+[1m[96m149[0m [1m[96m|[0m pub struct CommunityClient {
+    [1m[96m|[0m            [1m[96m---------------[0m [1m[96mfield in this struct[0m
+[1m[96m...[0m
+[1m[96m182[0m [1m[96m|[0m     terminated: Arc<AtomicBool>,
+    [1m[96m|[0m     [1m[93m^^^^^^^^^^[0m
+
+[1m[93mwarning[0m: `decibell-core` (lib) generated 4 warnings
+[1m[93mwarning[0m[1m[97m: variable does not need to be mutable[0m
+   [1m[96m--> [0msrc\media\jitter.rs:751:13
+    [1m[96m|[0m
+[1m[96m751[0m [1m[96m|[0m         let mut enc = OpusEncoder::new(64_000).unwrap();
+    [1m[96m|[0m             [1m[96m----[0m[1m[93m^^^[0m
+    [1m[96m|[0m             [1m[96m|[0m
+    [1m[96m|[0m             [1m[96mhelp: remove this `mut`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m[1m[97m: variable does not need to be mutable[0m
+    [1m[96m--> [0msrc\media\pipeline.rs:2301:17
+     [1m[96m|[0m
+[1m[96m2301[0m [1m[96m|[0m             let mut enc = super::super::codec::OpusEncoder::new(64_000).unwrap();
+     [1m[96m|[0m                 [1m[96m----[0m[1m[93m^^^[0m
+     [1m[96m|[0m                 [1m[96m|[0m
+     [1m[96m|[0m                 [1m[96mhelp: remove this `mut`[0m
+
+[1m[93mwarning[0m[1m[97m: variable does not need to be mutable[0m
+   [1m[96m--> [0msrc\media\voice_sim_tests.rs:408:13
+    [1m[96m|[0m
+[1m[96m408[0m [1m[96m|[0m         let mut enc = OpusEncoder::new(64000).unwrap();
+    [1m[96m|[0m             [1m[96m----[0m[1m[93m^^^[0m
+    [1m[96m|[0m             [1m[96m|[0m
+    [1m[96m|[0m             [1m[96mhelp: remove this `mut`[0m
+
+[1m[93mwarning[0m[1m[97m: fields `stream_cons` and `pull` are never read[0m
+    [1m[96m--> [0msrc\media\audio_device.rs:1114:13
+     [1m[96m|[0m
+[1m[96m1108[0m [1m[96m|[0m     pub(crate) struct Rig {
+     [1m[96m|[0m                       [1m[96m---[0m [1m[96mfields in this struct[0m
+[1m[96m...[0m
+[1m[96m1114[0m [1m[96m|[0m         pub stream_cons: Arc<std::sync::Mutex<HeapCons<i16>>>,
+     [1m[96m|[0m             [1m[93m^^^^^^^^^^^[0m
+[1m[96m1115[0m [1m[96m|[0m         pub stereo: Arc<AtomicBool>,
+[1m[96m1116[0m [1m[96m|[0m         pub pull: Arc<OutputPullStats>,
+     [1m[96m|[0m             [1m[93m^^^^[0m
+     [1m[96m|[0m
+     [1m[96m= [0m[1m[97mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m[1m[97m: field `hw_device_ref` is never read[0m
+   [1m[96m--> [0msrc\media\encoder.rs:106:5
+    [1m[96m|[0m
+[1m[96m 84[0m [1m[96m|[0m pub struct Encoder {
+    [1m[96m|[0m            [1m[96m-------[0m [1m[96mfield in this struct[0m
+[1m[96m...[0m
+[1m[96m106[0m [1m[96m|[0m     hw_device_ref: BufferRef,
+    [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: fields `matrix`, `primaries`, `transfer`, and `range` are never read[0m
+   [1m[96m--> [0msrc\media\encoder_checks.rs:457:9
+    [1m[96m|[0m
+[1m[96m450[0m [1m[96m|[0m pub struct Picture<'a> {
+    [1m[96m|[0m            [1m[96m-------[0m [1m[96mfields in this struct[0m
+[1m[96m...[0m
+[1m[96m457[0m [1m[96m|[0m     pub matrix: i32,
+    [1m[96m|[0m         [1m[93m^^^^^^[0m
+[1m[96m458[0m [1m[96m|[0m     pub primaries: i32,
+    [1m[96m|[0m         [1m[93m^^^^^^^^^[0m
+[1m[96m459[0m [1m[96m|[0m     pub transfer: i32,
+    [1m[96m|[0m         [1m[93m^^^^^^^^[0m
+[1m[96m460[0m [1m[96m|[0m     pub range: i32,
+    [1m[96m|[0m         [1m[93m^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: enum `Matrix` is never used[0m
+   [1m[96m--> [0msrc\media\encoder_checks.rs:560:10
+    [1m[96m|[0m
+[1m[96m560[0m [1m[96m|[0m pub enum Matrix {
+    [1m[96m|[0m          [1m[93m^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: associated items `of`, `k`, `to_yuv`, and `to_rgb` are never used[0m
+   [1m[96m--> [0msrc\media\encoder_checks.rs:566:12
+    [1m[96m|[0m
+[1m[96m565[0m [1m[96m|[0m impl Matrix {
+    [1m[96m|[0m [1m[96m-----------[0m [1m[96massociated items in this implementation[0m
+[1m[96m566[0m [1m[96m|[0m     pub fn of(code: i32, height: usize) -> Matrix {
+    [1m[96m|[0m            [1m[93m^^[0m
+[1m[96m...[0m
+[1m[96m576[0m [1m[96m|[0m     fn k(self) -> (f64, f64) {
+    [1m[96m|[0m        [1m[93m^[0m
+[1m[96m...[0m
+[1m[96m584[0m [1m[96m|[0m     pub fn to_yuv(self, rgb: [f64; 3], full: bool) -> [f64; 3] {
+    [1m[96m|[0m            [1m[93m^^^^^^[0m
+[1m[96m...[0m
+[1m[96m596[0m [1m[96m|[0m     pub fn to_rgb(self, yuv: [f64; 3], full: bool) -> [f64; 3] {
+    [1m[96m|[0m            [1m[93m^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `reference_yuv` is never used[0m
+   [1m[96m--> [0msrc\media\encoder_checks.rs:614:8
+    [1m[96m|[0m
+[1m[96m614[0m [1m[96m|[0m pub fn reference_yuv(bgra: &[u8], stride: usize, w: usize, h: usize, matrix: Matrix, full: bool) -> [Vec<u8>; 3] {
+    [1m[96m|[0m        [1m[93m^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: function `picture_rgb` is never used[0m
+   [1m[96m--> [0msrc\media\encoder_checks.rs:644:8
+    [1m[96m|[0m
+[1m[96m644[0m [1m[96m|[0m pub fn picture_rgb(p: &Picture) -> Vec<u8> {
+    [1m[96m|[0m        [1m[93m^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: calls to `std::mem::drop` with a value that implements `Copy` does nothing[0m
+   [1m[96m--> [0msrc\media\click_tests.rs:891:34
+    [1m[96m|[0m
+[1m[96m891[0m [1m[96m|[0m         ("gain control off", |c| drop(c.set_agc(true)), |c| drop(c.set_agc(false))),
+    [1m[96m|[0m                                  [1m[93m^^^^^[0m[1m[96m---------------[0m[1m[93m^[0m
+    [1m[96m|[0m                                       [1m[96m|[0m
+    [1m[96m|[0m                                       [1m[96margument has type `bool`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: use `let _ = ...` to ignore the expression or result
+    [1m[96m= [0m[1m[97mnote[0m: `#[warn(dropping_copy_types)]` on by default
+
+[1m[93mwarning[0m[1m[97m: calls to `std::mem::drop` with a value that implements `Copy` does nothing[0m
+   [1m[96m--> [0msrc\media\click_tests.rs:891:61
+    [1m[96m|[0m
+[1m[96m891[0m [1m[96m|[0m         ("gain control off", |c| drop(c.set_agc(true)), |c| drop(c.set_agc(false))),
+    [1m[96m|[0m                                                             [1m[93m^^^^^[0m[1m[96m----------------[0m[1m[93m^[0m
+    [1m[96m|[0m                                                                  [1m[96m|[0m
+    [1m[96m|[0m                                                                  [1m[96margument has type `bool`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: use `let _ = ...` to ignore the expression or result
+
+[1m[93mwarning[0m[1m[97m: calls to `std::mem::drop` with a value that implements `Copy` does nothing[0m
+   [1m[96m--> [0msrc\media\click_tests.rs:892:41
+    [1m[96m|[0m
+[1m[96m892[0m [1m[96m|[0m         ("gain control on", |_| {}, |c| drop(c.set_agc(true))),
+    [1m[96m|[0m                                         [1m[93m^^^^^[0m[1m[96m---------------[0m[1m[93m^[0m
+    [1m[96m|[0m                                              [1m[96m|[0m
+    [1m[96m|[0m                                              [1m[96margument has type `bool`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: use `let _ = ...` to ignore the expression or result
+
+[1m[93mwarning[0m[1m[97m: calls to `std::mem::drop` with a value that implements `Copy` does nothing[0m
+   [1m[96m--> [0msrc\media\click_tests.rs:893:56
+    [1m[96m|[0m
+[1m[96m893[0m [1m[96m|[0m         ("echo cancellation off, gain control on", |c| drop((c.set_aec(true), c.set_agc(true))), |c| drop(c.set_aec(false))),
+    [1m[96m|[0m                                                        [1m[93m^^^^^[0m[1m[96m----------------------------------[0m[1m[93m^[0m
+    [1m[96m|[0m                                                             [1m[96m|[0m
+    [1m[96m|[0m                                                             [1m[96margument has type `(bool, bool)`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: use `let _ = ...` to ignore the expression or result
+
+[1m[93mwarning[0m[1m[97m: calls to `std::mem::drop` with a value that implements `Copy` does nothing[0m
+   [1m[96m--> [0msrc\media\click_tests.rs:893:102
+    [1m[96m|[0m
+[1m[96m893[0m [1m[96m|[0m         ("echo cancellation off, gain control on", |c| drop((c.set_aec(true), c.set_agc(true))), |c| drop(c.set_aec(false))),
+    [1m[96m|[0m                                                                                                      [1m[93m^^^^^[0m[1m[96m----------------[0m[1m[93m^[0m
+    [1m[96m|[0m                                                                                                           [1m[96m|[0m
+    [1m[96m|[0m                                                                                                           [1m[96margument has type `bool`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: use `let _ = ...` to ignore the expression or result
+
+[1m[93mwarning[0m[1m[97m: calls to `std::mem::drop` with a value that implements `Copy` does nothing[0m
+   [1m[96m--> [0msrc\media\click_tests.rs:894:39
+    [1m[96m|[0m
+[1m[96m894[0m [1m[96m|[0m         ("noise suppression off", |c| drop(c.set_ns_level(2)), |c| drop(c.set_ns_level(0))),
+    [1m[96m|[0m                                       [1m[93m^^^^^[0m[1m[96m-----------------[0m[1m[93m^[0m
+    [1m[96m|[0m                                            [1m[96m|[0m
+    [1m[96m|[0m                                            [1m[96margument has type `bool`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: use `let _ = ...` to ignore the expression or result
+
+[1m[93mwarning[0m[1m[97m: calls to `std::mem::drop` with a value that implements `Copy` does nothing[0m
+   [1m[96m--> [0msrc\media\click_tests.rs:894:68
+    [1m[96m|[0m
+[1m[96m894[0m [1m[96m|[0m         ("noise suppression off", |c| drop(c.set_ns_level(2)), |c| drop(c.set_ns_level(0))),
+    [1m[96m|[0m                                                                    [1m[93m^^^^^[0m[1m[96m-----------------[0m[1m[93m^[0m
+    [1m[96m|[0m                                                                         [1m[96m|[0m
+    [1m[96m|[0m                                                                         [1m[96margument has type `bool`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: use `let _ = ...` to ignore the expression or result
+
+[1m[93mwarning[0m[1m[97m: calls to `std::mem::drop` with a value that implements `Copy` does nothing[0m
+   [1m[96m--> [0msrc\media\click_tests.rs:895:46
+    [1m[96m|[0m
+[1m[96m895[0m [1m[96m|[0m         ("noise suppression on", |_| {}, |c| drop(c.set_ns_level(2))),
+    [1m[96m|[0m                                              [1m[93m^^^^^[0m[1m[96m-----------------[0m[1m[93m^[0m
+    [1m[96m|[0m                                                   [1m[96m|[0m
+    [1m[96m|[0m                                                   [1m[96margument has type `bool`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: use `let _ = ...` to ignore the expression or result
+
+[1m[93mwarning[0m[1m[97m: this creates a dangling pointer because temporary `Vec<u8>` is dropped at end of statement[0m
+   [1m[96m--> [0msrc\media\frame_crypto.rs:586:41
+    [1m[96m|[0m
+[1m[96m586[0m [1m[96m|[0m                 assert_eq!(b.into_vec().as_ptr(), base);
+    [1m[96m|[0m                            [1m[96m------------[0m [1m[93m^^^^^^[0m [1m[93mpointer created here[0m
+    [1m[96m|[0m                            [1m[96m|[0m
+    [1m[96m|[0m                            [1m[96mthis `Vec<u8>` is dropped at end of statement[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mhelp[0m: bind the `Vec<u8>` to a variable such that it outlives the pointer returned by `as_ptr`
+    [1m[96m= [0m[1m[97mnote[0m: a dangling pointer is safe, but dereferencing one is undefined behavior
+    [1m[96m= [0m[1m[97mnote[0m: returning a pointer to a local variable will always result in a dangling pointer
+    [1m[96m= [0m[1m[97mnote[0m: for more information, see <https://doc.rust-lang.org/reference/destructors.html>
+    [1m[96m= [0m[1m[97mnote[0m: `#[warn(dangling_pointers_from_temporaries)]` on by default
+
+[1m[93mwarning[0m: `decibell-core` (lib test) generated 24 warnings (3 duplicates) (run `cargo fix --lib -p decibell-core --tests` to apply 5 suggestions)
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 12.93s
